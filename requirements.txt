@@ -1,0 +1,8 @@
+# PyTorch and torchvision
+torch
+torchvision
+# Other dependencies
+pyyaml
+numpy
+opencv-python
+submitit
