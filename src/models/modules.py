@@ -337,17 +337,31 @@ class VisionTransformerPredictor(nn.Module):
             rescale(layer.mlp.fc2.weight.data, layer_id + 1)
 
     def _init_weights(self, m):
+        # He Initialization for Linear and Conv2d layers (suitable for ReLU)
         if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight, std=self.init_std)
-            if isinstance(m, nn.Linear) and m.bias is not None:
+            # He Initialization (also called Kaiming Initialization)
+            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+            if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
+        
+        elif isinstance(m, nn.Conv2d):
+            # He Initialization for Conv2D layers
+            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
+        # LayerNorm Initialization
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-        elif isinstance(m, nn.Conv2d):
-            trunc_normal_(m.weight, std=self.init_std)
-            if m.bias is not None:
+
+        # Custom Initialization for other layers (Xavier Normal as an alternative)
+        else:
+            if hasattr(m, 'weight') and m.weight is not None:
+                nn.init.xavier_normal_(m.weight)
+            if hasattr(m, 'bias') and m.bias is not None:
                 nn.init.constant_(m.bias, 0)
+
 
     def forward(self, x, masks_x, masks):
         assert (masks is not None) and (masks_x is not None), 'Cannot run predictor without mask indices'
@@ -391,8 +405,6 @@ class VisionTransformerPredictor(nn.Module):
         x = self.predictor_proj(x)
 
         return x
-    
-
 
 class VisionTransformer(nn.Module):
     """ Vision Transformer """
@@ -454,17 +466,31 @@ class VisionTransformer(nn.Module):
             rescale(layer.mlp.fc2.weight.data, layer_id + 1)
 
     def _init_weights(self, m):
+        # He Initialization for Linear and Conv2d layers (suitable for ReLU)
         if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight, std=self.init_std)
-            if isinstance(m, nn.Linear) and m.bias is not None:
+            # He Initialization (also called Kaiming Initialization)
+            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+            if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
+        
+        elif isinstance(m, nn.Conv2d):
+            # He Initialization for Conv2D layers
+            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
+        # LayerNorm Initialization
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-        elif isinstance(m, nn.Conv2d):
-            trunc_normal_(m.weight, std=self.init_std)
-            if m.bias is not None:
+
+        # Custom Initialization for other layers (Xavier Normal as an alternative)
+        else:
+            if hasattr(m, 'weight') and m.weight is not None:
+                nn.init.xavier_normal_(m.weight)
+            if hasattr(m, 'bias') and m.bias is not None:
                 nn.init.constant_(m.bias, 0)
+
 
     def forward(self, x, masks=None):
         if masks is not None:
@@ -565,16 +591,29 @@ class Crosser(nn.Module):
             rescale(layer.mlp.fc2.weight.data, layer_id + 1)
 
     def _init_weights(self, m):
+        # He Initialization for Linear and Conv2d layers (suitable for ReLU)
         if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight, std=self.init_std)
-            if isinstance(m, nn.Linear) and m.bias is not None:
+            # He Initialization (also called Kaiming Initialization)
+            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+            if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
+        
+        elif isinstance(m, nn.Conv2d):
+            # He Initialization for Conv2D layers
+            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
+        # LayerNorm Initialization
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-        elif isinstance(m, nn.Conv2d):
-            trunc_normal_(m.weight, std=self.init_std)
-            if m.bias is not None:
+
+        # Custom Initialization for other layers (Xavier Normal as an alternative)
+        else:
+            if hasattr(m, 'weight') and m.weight is not None:
+                nn.init.xavier_normal_(m.weight)
+            if hasattr(m, 'bias') and m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, T, V, text_masks=None):
@@ -600,7 +639,10 @@ class Crosser(nn.Module):
         return T, V
 
 def crosser_module(**kwargs):
-    return Crosser(**kwargs)
+    return Crosser(
+        norm_layer=partial(nn.LayerNorm, eps=1e-6),
+        **kwargs
+    )
 
 class VisionEncoder(nn.Module):
     """ Vision Encoder """
@@ -610,6 +652,14 @@ class VisionEncoder(nn.Module):
         patch_size=16,
         in_chans=3,
         embed_dim=768,
+        depth=6,
+        num_heads=12,
+        mlp_ratio=4.0,
+        qkv_bias=True,
+        qk_scale=None,
+        drop_rate=0.0,
+        attn_drop_rate=0.0,
+        drop_path_rate=0.0,
         norm_layer=nn.LayerNorm,
         init_std=0.02,
         **kwargs
@@ -634,23 +684,52 @@ class VisionEncoder(nn.Module):
                                             int(self.patch_embed.num_patches**.5),
                                             cls_token=True)
         self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
-
+        # ---
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+        self.blocks = nn.ModuleList([
+            Block(
+                dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
+                drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer)
+            for i in range(depth)])
         self.norm = norm_layer(embed_dim)
         # ------
         self.init_std = init_std
         self.apply(self._init_weights)
+        self.fix_init_weight()
+        
+    def fix_init_weight(self):
+        def rescale(param, layer_id):
+            param.div_(math.sqrt(2.0 * layer_id))
+
+        for layer_id, layer in enumerate(self.blocks):
+            rescale(layer.attn.proj.weight.data, layer_id + 1)
+            rescale(layer.mlp.fc2.weight.data, layer_id + 1)
+
         
     def _init_weights(self, m):
+        # He Initialization for Linear and Conv2d layers (suitable for ReLU)
         if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight, std=self.init_std)
-            if isinstance(m, nn.Linear) and m.bias is not None:
+            # He Initialization (also called Kaiming Initialization)
+            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+            if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
+        
+        elif isinstance(m, nn.Conv2d):
+            # He Initialization for Conv2D layers
+            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
+        # LayerNorm Initialization
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-        elif isinstance(m, nn.Conv2d):
-            trunc_normal_(m.weight, std=self.init_std)
-            if m.bias is not None:
+
+        # Custom Initialization for other layers (Xavier Normal as an alternative)
+        else:
+            if hasattr(m, 'weight') and m.weight is not None:
+                nn.init.xavier_normal_(m.weight)
+            if hasattr(m, 'bias') and m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, x, masks=None):
@@ -674,6 +753,10 @@ class VisionEncoder(nn.Module):
         if masks is not None:
             x = x[:, 1:, :]  # (B, N, D)
             x = apply_masks(x, masks)
+            
+        # -- fwd prop
+        for i, blk in enumerate(self.blocks):
+            x = blk(x)
 
         if self.norm is not None:
             x = self.norm(x)
@@ -700,7 +783,7 @@ class VisionEncoder(nn.Module):
 
 def vision_encoder(**kwargs):
     model = VisionEncoder(
-        qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
 from transformers import AutoModel, AutoTokenizer
@@ -743,13 +826,13 @@ def text_encoder_model(**kwargs):
 
 def vit_predictor(**kwargs):
     model = VisionTransformerPredictor(
-        mlp_ratio=4, qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6),
+        norm_layer=partial(nn.LayerNorm, eps=1e-6),
         **kwargs)
     return model
 
 def vit_predictor_test(**kwargs):
     model = VisionTransformerPredictor(
-        mlp_ratio=4, qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6),
+        norm_layer=partial(nn.LayerNorm, eps=1e-6),
         **kwargs)
     return model
 

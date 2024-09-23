@@ -255,6 +255,7 @@ class VisionTransformerPredictor(nn.Module):
             for i in range(depth)])
         self.predictor_norm = norm_layer(predictor_embed_dim)
         self.predictor_proj = nn.Linear(predictor_embed_dim, embed_dim, bias=True)
+        self.final_norm = norm_layer(embed_dim)
         # ------
         self.init_std = init_std
         trunc_normal_(self.mask_token, std=self.init_std)
@@ -322,6 +323,8 @@ class VisionTransformerPredictor(nn.Module):
         # -- return preds for mask tokens
         x = x[:, N_ctxt:]
         x = self.predictor_proj(x)
+        
+        x = self.final_norm(x)
 
         return x
 

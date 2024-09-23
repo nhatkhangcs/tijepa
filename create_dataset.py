@@ -51,11 +51,13 @@ from PIL import Image
 import json
 from tqdm import tqdm
 
+from src.masks.custom_multiblock import MultiBlock
+
 class ImageTextDataset(Dataset):
     def __init__(
         self, 
         image_path, 
-        caption_path, 
+        caption_path,
         batch_size,
         img_size,
         patch_size,
@@ -63,7 +65,8 @@ class ImageTextDataset(Dataset):
         device='cuda',
         shuffle=False,
         max=None | int,
-        transform=None
+        transform=None, 
+        collator=None
     ):
         self.batch_size = batch_size
         self.img_size = img_size
@@ -88,23 +91,68 @@ class ImageTextDataset(Dataset):
         
         if shuffle:
             random.shuffle(self.image_filenames)
+
+        self.multiblock = MultiBlock(
+            block_scale=(0.15, 0.2),
+            block_aspect_ratio=(0.75, 1.5),
+            device='cuda',
+        )
+        self.collator = collator
         
+    # def generate_random_predict_masks(self, num_predict_patches: int, current_batch_size: int):
+    #     predict_masks = []
+    #     for _ in range(current_batch_size):
+    #         random_patches = random.sample(
+    #             list(self.all_patches),
+    #             num_predict_patches
+    #         )
+    #         predict_masks.append(random_patches)
+    #     return torch.tensor(predict_masks).to(self.device)
+
+    # def generate_context_masks(self, predict_masks: torch.Tensor):
+    #     context_masks = []
+    #     for i in range(len(predict_masks)):
+    #         remaining_patches = list(self.all_patches - set(predict_masks[i].tolist()))
+    #         context_masks.append(remaining_patches)
+    #     return torch.tensor(context_masks).to(self.device)     
+
     def generate_random_predict_masks(self, num_predict_patches: int, current_batch_size: int):
         predict_masks = []
+        max_len = 0
+        
+        # Generate masks and track the maximum length
         for _ in range(current_batch_size):
             random_patches = random.sample(
                 list(self.all_patches),
                 num_predict_patches
             )
             predict_masks.append(random_patches)
+            max_len = max(max_len, len(random_patches))
+        
+        # Pad all masks to the maximum length
+        for i in range(len(predict_masks)):
+            padding_len = max_len - len(predict_masks[i])
+            predict_masks[i].extend([-1] * padding_len)  # Use -1 as padding
+        
         return torch.tensor(predict_masks).to(self.device)
 
     def generate_context_masks(self, predict_masks: torch.Tensor):
         context_masks = []
+        max_len = 0
+        
+        # Generate context masks and track the maximum length
         for i in range(len(predict_masks)):
             remaining_patches = list(self.all_patches - set(predict_masks[i].tolist()))
             context_masks.append(remaining_patches)
-        return torch.tensor(context_masks).to(self.device)        
+            max_len = max(max_len, len(remaining_patches))
+        
+        # Pad all context masks to the maximum length
+        for i in range(len(context_masks)):
+            padding_len = max_len - len(context_masks[i])
+            context_masks[i].extend([-1] * padding_len)  # Use -1 as padding
+        
+        return torch.tensor(context_masks).to(self.device)
+
 
     def get_image(self, idx):
         img_path = os.path.join(self.folder_path, self.image_filenames[idx])
@@ -125,7 +173,7 @@ class ImageTextDataset(Dataset):
         return int(math.ceil(len(self.image_filenames) / self.batch_size))
     
     def __iter__(self):
-        self.current_idx = 0 
+        self.current_idx = 0
         
         while self.current_idx < len(self.image_filenames):
             images = []
@@ -139,14 +187,7 @@ class ImageTextDataset(Dataset):
                 
             current_batch_size = len(captions)
             
-            predict_masks = self.generate_random_predict_masks(
-                random.randint(
-                    int(self._hidden_ratio[0] * self.n_patches),
-                    int(self._hidden_ratio[1] * self.n_patches)
-                ),
-                current_batch_size=current_batch_size
-            )
-            context_masks = self.generate_context_masks(predict_masks)
+            context_masks, predict_masks = self.multiblock(current_batch_size)
             
             self.current_idx += self.batch_size
 
@@ -156,6 +197,38 @@ class ImageTextDataset(Dataset):
                 context_masks,
                 predict_masks,
             )
+
+    def __getitem__(self, idx):
+        # Retrieve image and caption for the given index
+        image = self.get_image(idx)
+        caption = self.get_text(idx)
+
+        print('image:', image.shape)
+        
+        # Generate masks
+        num_predict_patches = random.randint(
+            int(self._hidden_ratio[0] * self.n_patches),
+            int(self._hidden_ratio[1] * self.n_patches)
+        )
+        predict_masks = self.generate_random_predict_masks(
+            num_predict_patches=num_predict_patches,
+            current_batch_size=1
+        )
+        context_masks = self.generate_context_masks(predict_masks)
+
+        print(f"Image shape: {image.shape}")
+        print('context_masks:', context_masks.shape)
+        print('predict_masks:', predict_masks.shape)
+        print(context_masks.squeeze(0))
+        print(predict_masks.squeeze(0))
+        
+        # Return image, caption, and masks
+        return (
+            image.to(self.device),
+            caption,
+            context_masks.squeeze(0),  # Squeeze to remove batch dimension
+            predict_masks.squeeze(0)   # Squeeze to remove batch dimension
+        )
 
 # collator = MaskCollator()
 # dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, collate_fn=collator, num_workers=0)
