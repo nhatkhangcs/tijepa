@@ -44,6 +44,7 @@ class MultiBlock:
             for x in range(start_x, start_x + block_width):
                 indices.append(y * self.grid_size + x)  # Convert 2D index to 1D
         
+        # print(f"Block width: {block_width}, Block height: {block_height}")
         return indices
 
     def __call__(self, batch_size):

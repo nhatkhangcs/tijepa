@@ -64,9 +64,11 @@ class ImageTextDataset(Dataset):
         _hidden_ratio,
         device='cuda',
         shuffle=False,
+        block_scale=(0.05, 0.1),
+        block_aspect_ratio=(0.75, 1.5),
         max=None | int,
         transform=None, 
-        collator=None
+        collator=None,
     ):
         self.batch_size = batch_size
         self.img_size = img_size
@@ -93,8 +95,8 @@ class ImageTextDataset(Dataset):
             random.shuffle(self.image_filenames)
 
         self.multiblock = MultiBlock(
-            block_scale=(0.15, 0.2),
-            block_aspect_ratio=(0.75, 1.5),
+            block_scale=block_scale,
+            block_aspect_ratio=block_aspect_ratio,
             device='cuda',
         )
         self.collator = collator
@@ -197,39 +199,7 @@ class ImageTextDataset(Dataset):
                 context_masks,
                 predict_masks,
             )
-
-    def __getitem__(self, idx):
-        # Retrieve image and caption for the given index
-        image = self.get_image(idx)
-        caption = self.get_text(idx)
-
-        print('image:', image.shape)
-        
-        # Generate masks
-        num_predict_patches = random.randint(
-            int(self._hidden_ratio[0] * self.n_patches),
-            int(self._hidden_ratio[1] * self.n_patches)
-        )
-        predict_masks = self.generate_random_predict_masks(
-            num_predict_patches=num_predict_patches,
-            current_batch_size=1
-        )
-        context_masks = self.generate_context_masks(predict_masks)
-
-        print(f"Image shape: {image.shape}")
-        print('context_masks:', context_masks.shape)
-        print('predict_masks:', predict_masks.shape)
-        print(context_masks.squeeze(0))
-        print(predict_masks.squeeze(0))
-        
-        # Return image, caption, and masks
-        return (
-            image.to(self.device),
-            caption,
-            context_masks.squeeze(0),  # Squeeze to remove batch dimension
-            predict_masks.squeeze(0)   # Squeeze to remove batch dimension
-        )
-
+            
 # collator = MaskCollator()
 # dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, collate_fn=collator, num_workers=0)
 # data = dataset.batching(10)

@@ -169,14 +169,6 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, learning_rate=0.
     import time
     session = str(int(time.time()))
     
-    text_encoder = text_encoder_model(
-        device='cuda'
-    )
-    text_encoder_total_params = sum(p.numel() for p in text_encoder.parameters())
-    for p in text_encoder.parameters():
-        p.requires_grad = False
-    print(f"{text_encoder_total_params=}")
-    
     context_vision_encoder = vision_encoder(
         patch_size=PATCH_SIZE,
         embed_dim=EMBED_DIM,
@@ -208,40 +200,6 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, learning_rate=0.
         p.requires_grad = False
     target_vision_encoder_total_params = sum(p.numel() for p in target_vision_encoder.parameters())
     print(f"{target_vision_encoder_total_params=}")
-        
-    context_crosser = crosser_module(
-        text_embed_dim=768,
-        vision_embed_dim=EMBED_DIM,
-        hidden_dim=EMBED_DIM,
-        depth=CROSS_ATTN_DEPTH,
-        num_heads=CROSS_NUM_HEADS,
-        mlp_ratio=MLP_RATIO,
-        qkv_bias=True,
-        qk_scale=None,
-        drop_rate=DROP_RATE,
-        attn_drop_rate=ATTN_DROP_RATE,
-        residual=True,
-    ).to('cuda')
-    context_crosser_total_params = sum(p.numel() for p in context_crosser.parameters())
-    print(f"{context_crosser_total_params=}")
-    
-    target_crosser = crosser_module(
-        text_embed_dim=768,
-        vision_embed_dim=EMBED_DIM,
-        hidden_dim=EMBED_DIM,
-        depth=CROSS_ATTN_DEPTH,
-        num_heads=CROSS_NUM_HEADS,
-        mlp_ratio=MLP_RATIO,
-        qkv_bias=True,
-        qk_scale=None,
-        drop_rate=DROP_RATE,
-        attn_drop_rate=ATTN_DROP_RATE,
-        residual=True,
-    ).to('cuda')
-    for p in target_crosser.parameters():
-        p.requires_grad = False
-    target_crosser_total_params = sum(p.numel() for p in target_crosser.parameters())
-    print(f"{target_crosser_total_params=}")
     
     NUM_PATCHES = context_vision_encoder.patch_embed.num_patches
 
@@ -264,11 +222,7 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, learning_rate=0.
     # model = SiameseTextVisionModel(text_encoder, context_vision_encoder).to('cuda')
     # Optimizer
     optimizer = optim.Adam(
-        # list(text_encoder.parameters()) +
         list(context_vision_encoder.parameters()) +
-        # list(target_vision_encoder.parameters()) +
-        list(context_crosser.parameters()) +
-        # list(target_crosser.parameters()) +
         list(predictor.parameters()), lr=learning_rate
     )
     
@@ -287,10 +241,10 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, learning_rate=0.
                 transforms.Resize((SIZE, SIZE)), 
                 transforms.ToTensor()
             ]
-        )
+        ),
+        block_scale=(0.05, 0.1),
+        block_aspect_ratio=(0.75, 1.5)
     )
-
-    # dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=mask_collator, num_workers=0)
 
     # ema = (0.999, 1.0)
     ema = (0.996, 1.0)
@@ -306,65 +260,41 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, learning_rate=0.
         # text_encoder.eval()
         context_vision_encoder.train()
         # target_vision_encoder.eval()
-        context_crosser.train()
         # target_crosser.eval()
         predictor.train()
         # Initialize tqdm for the dataset
         with tqdm(dataset, desc=f"Epoch {epoch+1}/{num_epochs}") as pbar:
             for images, captions, context_masks, predict_masks in pbar:
-                visualize_rectangle(
-                    context_masks[0].tolist(),
-                    predict_masks[0].tolist(),
-                )
+                # visualize_rectangle(
+                #     context_masks[0].tolist(),
+                #     predict_masks[0].tolist(),
+                # )
                 # print(images)
                 # print(captions)
                 # Zero the gradients
                 optimizer.zero_grad()
-                
-                # Forward pass
-                encoded_text, text_attn_mask = text_encoder(captions)
 
-                # encoded_text = text_self_attention(encoded_text)
-                # print(f"{encoded_text.shape=}")
-                # print(f"{text_attn_mask.shape=}")
                 encoded_image_context = context_vision_encoder(images, context_masks)  # Encode the context patches
-
-                # encoded_image_context = image_self_attention(encoded_image_context)
-                # print(f"{encoded_image_context.shape=}")
-                T_context, V_context = context_crosser(encoded_text, encoded_image_context, text_attn_mask)
-                # print(f"{T_context.shape=}")
-                
-                predicted = predictor(V_context, context_masks, predict_masks)  # Generate predictions based on context
+                predicted = predictor(encoded_image_context, context_masks, predict_masks)  # Generate predictions based on context
                 # print(f"{predicted.shape=}")
                 
                 encoded_image_target = target_vision_encoder(images)  # Encode the full tensor
-                _, V_target = target_crosser(encoded_text, encoded_image_target)
-                # print(f"{V_target.shape=}")
                 
-                T_CLS = T_context[:, 0, :]
-                V_CLS = V_target[:, 0, :]
-                # c_loss = clip_loss(T_CLS, V_CLS, temperature=1)
-
-                # # generate contrastive features
-                # contrastive_features = generate_contrastive_features(T_context)
-
-                # # Calculate the contrastive loss
-                # hinge_loss = pairwise_hinge_loss(T_context, V_context, contrastive_features)
-                print(V_target[0][0][:7].tolist())
+                print(encoded_image_target[0][0][:7].tolist())
                 print(predicted[0][0][:7].tolist())
                 print()
-                print(V_target[0][1][:7].tolist())
+                print(encoded_image_target[0][1][:7].tolist())
                 print(predicted[0][1][:7].tolist())
                 print()
-                print(V_target[1][0][:7].tolist())
+                print(encoded_image_target[1][0][:7].tolist())
                 print(predicted[1][0][:7].tolist())
                 print()
-                print(V_target[1][1][:7].tolist())
+                print(encoded_image_target[1][1][:7].tolist())
                 print(predicted[1][1][:7].tolist())
                 print()
                 
                 
-                target = F.layer_norm(V_target, (V_target.size(-1),))  # Normalize the target
+                target = F.layer_norm(encoded_image_target, (encoded_image_target.size(-1),))  # Normalize the target
                 target = apply_masks(target, predict_masks)  # Apply predict mask
                 
                 # Calculate loss (L1 loss here)
@@ -392,9 +322,7 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, learning_rate=0.
                     print(m)
                     for param_q, param_k in zip(context_vision_encoder.parameters(), target_vision_encoder.parameters()):
                         param_k.data.mul_(m).add_((1.-m) * param_q.detach().data)
-                    for param_q, param_k in zip(context_crosser.parameters(), target_crosser.parameters()):
-                        param_k.data.mul_(m).add_((1.-m) * param_q.detach().data)
-                
+                        
                 # Update tqdm description with current loss values
                 pbar.set_postfix({
                     'MEM': torch.cuda.max_memory_allocated() / 1024.**3,
@@ -430,9 +358,9 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, learning_rate=0.
 
 def main():
     train(
-        num_epochs=10, 
-        max_images_per_epoch=10, 
-        batch_size=28,
+        num_epochs=100, 
+        max_images_per_epoch=320, 
+        batch_size=32,
         learning_rate=0.001
     )
     
