@@ -172,6 +172,8 @@ class CrossAttention(nn.Module):
 
         # Compute Q, K, V
         Q = self.query(X).reshape(B, N_q, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)  # (B, num_heads, N_q, head_dim)
+        print(Z.shape)
+        print(self.key(Z).shape)
         K = self.key(Z).reshape(B, N_kv, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)  # (B, num_heads, N_kv, head_dim)
         V = self.value(Z).reshape(B, N_kv, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)  # (B, num_heads, N_kv, head_dim)
 

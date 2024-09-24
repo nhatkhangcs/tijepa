@@ -1,6 +1,8 @@
 import torch
 import random
 
+from dataclasses import dataclass, asdict
+
 from src.models.modules import text_encoder_model, vision_encoder, crosser_module, vit_predictor
 from src.utils.tensors import apply_masks, repeat_interleave_batch
 from create_dataset import ImageTextDataset
@@ -13,25 +15,49 @@ from tqdm import tqdm
 import torch.nn as nn
 
 from src.utils.visualizer import visualize_rectangle
+from src.utils.saving import Saver
 
 ##################
-SIZE = 224
-PATCH_SIZE = 16
+@dataclass
+class ModelConfig:
+    SIZE: int = 224
+    PATCH_SIZE: int = 16
 
-EMBED_DIM = 768
-PREDICTOR_EMBED_DIM = 384
+    EMBED_DIM: int = 128
+    PREDICTOR_EMBED_DIM: int = 64
 
-DROP_RATE = 0.15
-ATTN_DROP_RATE = 0.15
-MLP_RATIO = 4.0
+    DROP_RATE: float = 0.1
+    ATTN_DROP_RATE: float = 0.1
+    MLP_RATIO: float = 2.0
 
-ENCODER_ATTN_DEPTH = 10
-CROSS_ATTN_DEPTH = 6
-PRED_ATTN_DEPTH = 12
+    ENCODER_ATTN_DEPTH: int = 5
+    PRED_ATTN_DEPTH: int = 5
+    # CROSS_ATTN_DEPTH: int = 6
 
-ENCODER_NUM_HEADS = 8
-CROSS_NUM_HEADS = 8
-PRED_NUM_HEADS = 8
+    ENCODER_NUM_HEADS: int = 4
+    PRED_NUM_HEADS: int = 4
+    # CROSS_NUM_HEADS: int = 8
+    
+# class ModelConfig:
+#     SIZE: int = 224
+#     PATCH_SIZE: int = 16
+
+#     EMBED_DIM: int = 768
+#     PREDICTOR_EMBED_DIM: int = 384
+
+#     DROP_RATE: float = 0.15
+#     ATTN_DROP_RATE: float = 0.15
+#     MLP_RATIO: float = 4.0
+
+#     ENCODER_ATTN_DEPTH: int = 10
+#     PRED_ATTN_DEPTH: int = 12
+#     CROSS_ATTN_DEPTH: int = 6
+
+#     ENCODER_NUM_HEADS: int = 8
+#     PRED_NUM_HEADS: int = 8
+#     CROSS_NUM_HEADS: int = 8
+
+MODEL_CONFIG = ModelConfig()
 ##################
 
 # def margin_function(text_features, contrastive_features):
@@ -170,31 +196,31 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, learning_rate=0.
     session = str(int(time.time()))
     
     context_vision_encoder = vision_encoder(
-        patch_size=PATCH_SIZE,
-        embed_dim=EMBED_DIM,
-        img_size=[SIZE],
-        depth=ENCODER_ATTN_DEPTH,
-        num_heads=ENCODER_NUM_HEADS,
-        mlp_ratio=MLP_RATIO,
+        patch_size=MODEL_CONFIG.PATCH_SIZE,
+        embed_dim=MODEL_CONFIG.EMBED_DIM,
+        img_size=[MODEL_CONFIG.SIZE],
+        depth=MODEL_CONFIG.ENCODER_ATTN_DEPTH,
+        num_heads=MODEL_CONFIG.ENCODER_NUM_HEADS,
+        mlp_ratio=MODEL_CONFIG.MLP_RATIO,
         qkv_bias=True,
         qk_scale=None,
-        drop_rate=DROP_RATE,
-        attn_drop_rate=ATTN_DROP_RATE,
+        drop_rate=MODEL_CONFIG.DROP_RATE,
+        attn_drop_rate=MODEL_CONFIG.ATTN_DROP_RATE,
     ).to('cuda')
     context_vision_encoder_total_params = sum(p.numel() for p in context_vision_encoder.parameters())
     print(f"{context_vision_encoder_total_params=}")
     
     target_vision_encoder = vision_encoder(
-        patch_size=PATCH_SIZE,
-        embed_dim=EMBED_DIM,
-        img_size=[SIZE],
-        depth=ENCODER_ATTN_DEPTH,
-        num_heads=ENCODER_NUM_HEADS,
-        mlp_ratio=MLP_RATIO,
+        patch_size=MODEL_CONFIG.PATCH_SIZE,
+        embed_dim=MODEL_CONFIG.EMBED_DIM,
+        img_size=[MODEL_CONFIG.SIZE],
+        depth=MODEL_CONFIG.ENCODER_ATTN_DEPTH,
+        num_heads=MODEL_CONFIG.ENCODER_NUM_HEADS,
+        mlp_ratio=MODEL_CONFIG.MLP_RATIO,
         qkv_bias=True,
         qk_scale=None,
-        drop_rate=DROP_RATE,
-        attn_drop_rate=ATTN_DROP_RATE,
+        drop_rate=MODEL_CONFIG.DROP_RATE,
+        attn_drop_rate=MODEL_CONFIG.ATTN_DROP_RATE,
     ).to('cuda')
     for p in target_vision_encoder.parameters():
         p.requires_grad = False
@@ -204,16 +230,16 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, learning_rate=0.
     NUM_PATCHES = context_vision_encoder.patch_embed.num_patches
 
     predictor = vit_predictor(
-        embed_dim=EMBED_DIM,
-        depth=PRED_ATTN_DEPTH,
-        num_heads=PRED_NUM_HEADS,
-        predictor_embed_dim=PREDICTOR_EMBED_DIM,
+        embed_dim=MODEL_CONFIG.EMBED_DIM,
+        depth=MODEL_CONFIG.PRED_ATTN_DEPTH,
+        num_heads=MODEL_CONFIG.PRED_NUM_HEADS,
+        predictor_embed_dim=MODEL_CONFIG.PREDICTOR_EMBED_DIM,
         num_patches=NUM_PATCHES,
-        mlp_ratio=MLP_RATIO,
+        mlp_ratio=MODEL_CONFIG.MLP_RATIO,
         qkv_bias=True,
         qk_scale=None,
-        drop_rate=DROP_RATE,
-        attn_drop_rate=ATTN_DROP_RATE,
+        drop_rate=MODEL_CONFIG.DROP_RATE,
+        attn_drop_rate=MODEL_CONFIG.ATTN_DROP_RATE,
     ).to('cuda')
     predictor_total_params = sum(p.numel() for p in predictor.parameters())
     print(f"{predictor_total_params=}")
@@ -232,18 +258,24 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, learning_rate=0.
         image_path='src/datasets/train', 
         caption_path='src/datasets/annotations/filename_caption_dict.json', 
         batch_size=batch_size,
-        img_size=SIZE,
-        patch_size=PATCH_SIZE,
+        img_size=MODEL_CONFIG.SIZE,
+        patch_size=MODEL_CONFIG.PATCH_SIZE,
         _hidden_ratio=HIDDEN_RATIO,
         max=max_images_per_epoch,
         transform=transforms.Compose(
             [
-                transforms.Resize((SIZE, SIZE)), 
+                transforms.Resize((MODEL_CONFIG.SIZE, MODEL_CONFIG.SIZE)), 
                 transforms.ToTensor()
             ]
         ),
         block_scale=(0.05, 0.1),
         block_aspect_ratio=(0.75, 1.5)
+    )
+    
+    saver = Saver(
+        metrics = ['loss'],
+        folder_name = 'small',
+        **asdict(MODEL_CONFIG)
     )
 
     # ema = (0.999, 1.0)
@@ -253,9 +285,7 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, learning_rate=0.
         ema[0] + i*(ema[1]-ema[0])/(len(dataset)*num_epochs*ipe_scale)
         for i in range(int(len(dataset)*num_epochs*ipe_scale)+1)
     )
-    
-    losses = []
-    
+        
     for epoch in range(num_epochs):
         # text_encoder.eval()
         context_vision_encoder.train()
@@ -309,7 +339,11 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, learning_rate=0.
                 # print(target[0][0])
                 
                 loss = p_loss # + c_loss
-                losses.append(loss.tolist())
+                saver.update_metric(
+                    {
+                        'loss':loss.tolist()
+                    }
+                )
                 
                 # Backward pass and optimization
                 loss.backward()
@@ -333,27 +367,7 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, learning_rate=0.
                     # 'Total Loss': loss.item()
                 })
         
-    import matplotlib.pyplot as plt
-
-    # Assume this is your list of losses recorded at each batch
-    # Create a list for batch indices
-    batches = list(range(1, len(losses) + 1))
-
-    # Plotting the loss function
-    plt.figure(figsize=(8, 6))
-    plt.plot(batches, losses, label='Loss per Batch', color='blue', marker='o', linestyle='-')
-    plt.title('Loss Function over Batches')
-    plt.xlabel('Batch')
-    plt.ylabel('Loss')
-    plt.grid(True)
-    plt.legend()
-
-    # Save the plot to the specified path
-    plt.savefig(f'assets/loss-{session}.png', bbox_inches='tight')  # Save the plot as loss.png in the assets folder
-
-    # Clear the plot after saving
-    plt.close()
-
+        saver.save_epoch()
 
 
 def main():
