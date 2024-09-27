@@ -150,7 +150,7 @@ class Attention(nn.Module):
         x = self.proj_drop(x)
         return x, attn
 
-class CrossAttention(nn.Module):
+class CrossAttentionSameDim(nn.Module):
     def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
         super().__init__()
         self.num_heads = num_heads
@@ -172,8 +172,6 @@ class CrossAttention(nn.Module):
 
         # Compute Q, K, V
         Q = self.query(X).reshape(B, N_q, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)  # (B, num_heads, N_q, head_dim)
-        print(Z.shape)
-        print(self.key(Z).shape)
         K = self.key(Z).reshape(B, N_kv, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)  # (B, num_heads, N_kv, head_dim)
         V = self.value(Z).reshape(B, N_kv, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)  # (B, num_heads, N_kv, head_dim)
 
@@ -194,7 +192,50 @@ class CrossAttention(nn.Module):
         x = self.proj_drop(x)
         return x, attn
 
+class CrossAttention(nn.Module):
+    def __init__(self, dim_x, dim_z, dim_out, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim = dim_out // num_heads
+        self.scale = qk_scale or head_dim ** -0.5
 
+        # Linear layers for queries, keys, and values
+        self.query = nn.Linear(dim_x, dim_out, bias=qkv_bias)
+        self.key = nn.Linear(dim_z, dim_out, bias=qkv_bias)
+        self.value = nn.Linear(dim_z, dim_out, bias=qkv_bias)
+        
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim_out, dim_out)
+        self.proj_drop = nn.Dropout(proj_drop)
+        
+    
+    def forward(self, X, Z, attn_masks=None):
+        B, N_q, C = X.shape  # B: batch size, N_q: number of query tokens, C: embedding dimension
+        _, N_kv, _ = Z.shape  # N_kv: number of key-value tokens
+
+        # Compute Q, K, V
+        Q = self.query(X).reshape(B, N_q, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)  # (B, num_heads, N_q, head_dim)
+        K = self.key(Z).reshape(B, N_kv, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)  # (B, num_heads, N_kv, head_dim)
+        V = self.value(Z).reshape(B, N_kv, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)  # (B, num_heads, N_kv, head_dim)
+
+        # Compute attention scores
+        attn = (Q @ K.transpose(-2, -1)) * self.scale  # (B, num_heads, N_q, N_kv)
+        
+        # Apply mask if provided
+        if attn_masks is not None:
+            # Add mask to attention scores (mask should broadcast to (B, num_heads, N_q, N_kv))
+            attn = attn.masked_fill(attn_masks.unsqueeze(1).unsqueeze(2) == 0, float('-inf'))
+
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+
+        # Compute output
+        x = (attn @ V).transpose(1, 2).reshape(B, N_q, C)  # (B, N_q, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x, attn
+            
+    
 class Block(nn.Module):
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
@@ -220,7 +261,7 @@ class CrossBlock(nn.Module):
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.cross_attn = CrossAttention(
+        self.cross_attn = CrossAttentionSameDim(
             dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
@@ -236,6 +277,44 @@ class CrossBlock(nn.Module):
         # Add and normalize
         X = X + self.drop_path(y)
         X = X + self.drop_path(self.mlp(self.norm2(X)))
+        
+        return X
+    
+class SelfThenCrossBlock(nn.Module):
+    def __init__(self, dim_x, dim_z, dim_out, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, feed_forward=True):
+        super().__init__()
+        self.attn = Attention(
+            dim_x, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop
+        )
+        self.norm_after_self_attn = norm_layer(dim_x)
+        self.cross_attn = CrossAttention(
+            dim_x, dim_z, dim_out, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop
+        )
+        self.norm_after_cross_attn = norm_layer(dim_out)
+
+        if feed_forward:
+            self.mlp = MLP(in_features=dim_out, hidden_features=int(dim_out * mlp_ratio), act_layer=act_layer, drop=drop)
+            self.norm_after_mlp = norm_layer(dim_out)
+
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        
+    def forward(self, X, Z, attn_masks=None):
+        # Apply self-attention
+        y, _ = self.attn(X)
+        X = X + self.drop_path(y)
+        X = self.norm_after_self_attn(X)
+        
+        # Apply cross-attention between X and Z
+        y, _ = self.cross_attn(X, Z, attn_masks)
+        X = X + self.drop_path(y)
+        X 
+        
+        # Apply feed-forward network
+        if hasattr(self, 'mlp'):
+            y = self.mlp(X)
+            X = X + self.drop_path(y)
+            X = self.norm_after_mlp(X)
         
         return X
 
@@ -646,6 +725,100 @@ def crosser_module(**kwargs):
         **kwargs
     )
 
+
+class X_T2I(nn.Module): # Cross Attention from Text to Image
+    def __init__(
+        self,
+        text_embed_dim,
+        vision_embed_dim,
+        hidden_dim,
+        depth=12,
+        num_heads=12,
+        mlp_ratio=4.0,
+        qkv_bias=True,
+        qk_scale=None,
+        drop_rate=0.0,
+        attn_drop_rate=0.0,
+        drop_path_rate=0.0,
+        norm_layer=nn.LayerNorm,
+        init_std=0.02,
+        **kwargs
+    ):
+        super().__init__()
+        self.vision_proj = nn.Linear(vision_embed_dim, hidden_dim, bias=True)
+        self.vision_norm = norm_layer(hidden_dim)
+        # --
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+        self.blocks = nn.ModuleList(
+            [
+                SelfThenCrossBlock(
+                    dim_x=hidden_dim, dim_z=text_embed_dim, dim_out=hidden_dim, num_heads=num_heads,
+                    mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale, drop=drop_rate,
+                    attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer
+                )
+                for i in range(depth)
+            ]
+        )
+        
+        # ------
+        self.init_std = init_std
+        self.apply(self._init_weights)
+        self.fix_init_weight()
+    
+    def fix_init_weight(self):
+        def rescale(param, layer_id):
+            param.div_(math.sqrt(2.0 * layer_id))
+
+        for layer_id, layer in enumerate(self.blocks):
+            rescale(layer.attn.proj.weight.data, layer_id + 1)
+            rescale(layer.cross_attn.proj.weight.data, layer_id + 1)
+            if hasattr(layer, 'mlp'):
+                rescale(layer.mlp.fc2.weight.data, layer_id + 1)
+
+    def _init_weights(self, m):
+        # He Initialization for Linear and Conv2d layers (suitable for ReLU)
+        if isinstance(m, nn.Linear):
+            # He Initialization (also called Kaiming Initialization)
+            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        
+        elif isinstance(m, nn.Conv2d):
+            # He Initialization for Conv2D layers
+            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
+        # LayerNorm Initialization
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+        # Custom Initialization for other layers (Xavier Normal as an alternative)
+        else:
+            if hasattr(m, 'weight') and m.weight is not None:
+                nn.init.xavier_normal_(m.weight)
+            if hasattr(m, 'bias') and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, T, V, text_masks=None):
+        # Project inputs to hidden dimension
+        V = self.vision_proj(V)
+        V = self.vision_norm(V)
+
+        # Apply cross-attention blocks
+        for block in self.blocks:
+            V = block(V, T, attn_masks=text_masks)
+        
+        return V
+    
+    
+def x_t2i_module(**kwargs):
+    return X_T2I(
+        norm_layer=partial(nn.LayerNorm, eps=1e-6),
+        **kwargs
+    )
+
 class VisionEncoder(nn.Module):
     """ Vision Encoder """
     def __init__(
@@ -791,7 +964,7 @@ def vision_encoder(**kwargs):
 from transformers import AutoModel, AutoTokenizer
 
 class TextEncoder(nn.Module):
-    def __init__(self, model_path='Alibaba-NLP/gte-base-en-v1.5', max_length=8192, device='cpu'):
+    def __init__(self, model_path='Alibaba-NLP/gte-base-en-v1.5', max_length=8192, device='cuda:0'):
         super(TextEncoder, self).__init__()
         self.device = device
         self.model_path = model_path
@@ -893,3 +1066,18 @@ VIT_EMBED_DIMS = {
     'vit_huge': 1280,
     'vit_giant': 1408,
 }
+
+class SimpleLinear(nn.Module):
+    def __init__(self, in_dim, out_dim, bias=True):
+        super(SimpleLinear, self).__init__()
+        self.linear = nn.Linear(in_dim, out_dim, bias=bias)
+        self.init_weights()
+
+    def init_weights(self):
+        nn.init.kaiming_normal_(self.linear.weight, mode='fan_in', nonlinearity='relu')
+        if self.linear.bias is not None:
+            nn.init.constant_(self.linear.bias, 0)
+
+    def forward(self, x):
+        return self.linear(x)
+    

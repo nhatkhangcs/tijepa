@@ -61,8 +61,9 @@ class ImageTextDataset(Dataset):
         batch_size,
         img_size,
         patch_size,
-        _hidden_ratio,
-        device='cuda',
+        device_image='cuda',
+        device_context_masks='cuda',
+        device_predict_masks='cuda',
         shuffle=False,
         block_scale=(0.05, 0.1),
         block_aspect_ratio=(0.75, 1.5),
@@ -73,8 +74,9 @@ class ImageTextDataset(Dataset):
         self.batch_size = batch_size
         self.img_size = img_size
         self.patch_size = patch_size
-        self._hidden_ratio = _hidden_ratio
-        self.device = device
+        self.device_image = device_image
+        self.device_context_masks = device_context_masks
+        self.device_predict_masks = device_predict_masks
         
         assert img_size % patch_size == 0, f"img_size {img_size} is not divisible by patch_size {patch_size}"
         
@@ -97,7 +99,8 @@ class ImageTextDataset(Dataset):
         self.multiblock = MultiBlock(
             block_scale=block_scale,
             block_aspect_ratio=block_aspect_ratio,
-            device='cuda',
+            device_context_masks = device_context_masks,
+            device_predict_masks = device_predict_masks
         )
         self.collator = collator
         
@@ -194,7 +197,7 @@ class ImageTextDataset(Dataset):
             self.current_idx += self.batch_size
 
             yield (
-                torch.stack(images).to(self.device),
+                torch.stack(images).to(self.device_image),
                 captions,
                 context_masks,
                 predict_masks,

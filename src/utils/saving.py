@@ -2,6 +2,7 @@ import time
 import os
 import json
 import matplotlib.pyplot as plt
+import torch
 
 class Saver:
     
@@ -77,6 +78,14 @@ class Saver:
             plt.close()
             
         self.current_epoch += 1
+
+    def save_checkpoint(self, save_dict: dict, epoch: int):
+        torch.save(
+            save_dict, 
+            os.path.join(self.folder_path, f"epoch-{epoch}.pt")
+        )
+        
+
         
 if not os.path.exists(Saver.SAVING_PATH):
     os.makedirs(Saver.SAVING_PATH)

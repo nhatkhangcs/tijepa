@@ -2,14 +2,23 @@ import random
 import torch
 
 class MultiBlock:
-    def __init__(self, block_scale=(0.15, 0.2), n_block=4, block_aspect_ratio=(0.75, 1.5), context_scale=(0.85, 1.0), device='cuda'):
+    def __init__(
+            self, 
+            block_scale=(0.15, 0.2), 
+            n_block=4, 
+            block_aspect_ratio=(0.75, 1.5), 
+            context_scale=(0.85, 1.0), 
+            device_context_masks='cuda',
+            device_predict_masks='cuda',
+        ):
         self.block_scale = block_scale  # Portion of the image area the block should cover
         self.n_block = n_block
         self.block_aspect_ratio = block_aspect_ratio
         self.context_scale = context_scale  # Portion of the image area for context
         self.grid_size = 14  # 14x14 patches for a 224x224 image
         self.total_patches = self.grid_size * self.grid_size  # 196 patches
-        self.device = device
+        self.device_context_masks = device_context_masks
+        self.device_predict_masks = device_predict_masks
 
     def _sample_block(self, scale_range, aspect_ratio_range):
         """Sample a random block (w, h) based on the area and aspect ratio ranges."""
@@ -69,7 +78,7 @@ class MultiBlock:
         context_indices_tensor = torch.tensor(list(context_indices), dtype=torch.int64)
 
         # Step 3: Repeat the tensors across the batch size
-        context_batch = context_indices_tensor.unsqueeze(0).repeat(batch_size, 1).to(self.device)  # (batch_size, num_context_indices)
-        target_batch = target_indices_tensor.unsqueeze(0).repeat(batch_size, 1).to(self.device)    # (batch_size, num_target_indices)
+        context_batch = context_indices_tensor.unsqueeze(0).repeat(batch_size, 1).to(self.device_context_masks)  # (batch_size, num_context_indices)
+        target_batch = target_indices_tensor.unsqueeze(0).repeat(batch_size, 1).to(self.device_predict_masks)    # (batch_size, num_target_indices)
 
         return context_batch, target_batch
