@@ -13,6 +13,7 @@ class Saver:
         metrics: list[str] = ['loss'],
         update_by: str = 'iter',
         folder_name: str = str(int(time.time())),
+        current_epoch: int = 1,
         **kwargs
     ):
         self.metrics = {
@@ -23,7 +24,7 @@ class Saver:
         self.folder_path = os.path.join(Saver.SAVING_PATH, self.folder_name)
         
         self.configs = kwargs
-        self.current_epoch = 1
+        self.current_epoch = current_epoch
         
         self.create_folder()
     

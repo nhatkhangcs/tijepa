@@ -152,13 +152,14 @@ def inference(images, captions, text_encoder, vision_encoder, target_crosser, de
     
     return cross_encoded_target
 
-def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=10, learning_rate=0.01, save_interval=1):
+def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=10, learning_rate=0.01, save_interval=1, resume_from=None):
 
     # Optimizer
     # optimizer = optim.Adam(
     #     list(context_crosser.parameters()) +
     #     list(predictor.parameters()), lr=learning_rate
     # )
+    start_epoch = 0
             
     dataset = ImageTextDataset(
         image_path='src/datasets/train', 
@@ -178,15 +179,10 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
         device_image=DEVICE_0,
         device_context_masks=DEVICE_0,
         device_predict_masks=DEVICE_1,
+        shuffle=False
     )
     
-    saver = Saver(
-        metrics = ['loss'],
-        folder_name = 'cross',
-        **asdict(MODEL_CONFIG)
-    )
-
-    # -- OPTIMIZATION]
+    # -- OPTIMIZATION
     ipe_scale = params['optimization']['ipe_scale']  # scheduler scale factor (def: 1.0)
     print(f"{ipe_scale=}")
     wd = float(params['optimization']['weight_decay'])
@@ -224,8 +220,38 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
         ema[0] + i*(ema[1]-ema[0])/(ipe*num_epochs*ipe_scale)
         for i in range(int(ipe*num_epochs*ipe_scale)+1)
     )
+
+    if resume_from is not None:
+        print(f"Resuming from {resume_from}...")
+        saved_dict = torch.load(resume_from, map_location='cpu')
+        context_crosser.load_state_dict(saved_dict['context_crosser'])
+        predictor.load_state_dict(saved_dict['predictor'])
+        target_crosser.load_state_dict(saved_dict['target_crosser'])
+        optimizer.load_state_dict(saved_dict['opt'])
+        scaler.load_state_dict(saved_dict['scaler'])
+        start_epoch = saved_dict['epoch']
+        print(f"Resumed from epoch {start_epoch}")
+
+        for _ in range(start_epoch*ipe):
+            scheduler.step()
+            wd_scheduler.step()
+            _m = next(momentum_scheduler)
         
-    for epoch in range(num_epochs):
+        print(f"Momemtum: {_m}")
+
+        del saved_dict
+
+    saver = Saver(
+        metrics = ['loss'],
+        folder_name = 'tenk',
+        current_epoch = start_epoch,
+        **asdict(MODEL_CONFIG)
+    )
+
+
+    # start from start_epoch
+    for epoch in range(start_epoch, num_epochs):
+
         # Set the models to train mode
         context_crosser.train()
         predictor.train()
@@ -398,20 +424,22 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
                 'target_crosser': target_crosser.state_dict(),
                 'opt': optimizer.state_dict(),
                 'scaler': None if scaler is None else scaler.state_dict(),
-                'epoch': epoch,
+                'epoch': epoch + 1,
                 'loss': total_loss,
             }
             saver.save_checkpoint(save_dict, epoch=epoch+1)
+            print(f"Saved checkpoint: {save_dict}")
 
 
 def main():
     train(
-        num_epochs=100, 
-        max_images_per_epoch=90, 
-        mini_batch_size=90,
-        batch_size=90,
+        num_epochs=10, 
+        max_images_per_epoch=10000, 
+        mini_batch_size=80,
+        batch_size=80*5,
         learning_rate=0.001,
-        save_interval=10
+        save_interval=1,
+        resume_from=None,
     )
     
 if __name__ == "__main__":
