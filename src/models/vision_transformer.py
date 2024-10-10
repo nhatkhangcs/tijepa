@@ -255,6 +255,7 @@ class VisionTransformerPredictor(nn.Module):
             for i in range(depth)])
         self.predictor_norm = norm_layer(predictor_embed_dim)
         self.predictor_proj = nn.Linear(predictor_embed_dim, embed_dim, bias=True)
+        self.final_norm = norm_layer(embed_dim)
         # ------
         self.init_std = init_std
         trunc_normal_(self.mask_token, std=self.init_std)
@@ -322,6 +323,143 @@ class VisionTransformerPredictor(nn.Module):
         # -- return preds for mask tokens
         x = x[:, N_ctxt:]
         x = self.predictor_proj(x)
+        
+        x = self.final_norm(x)
+
+        return x
+
+class VisionTransformerPredictorTest(nn.Module):
+    """ Vision Transformer """
+    def __init__(
+        self,
+        num_patches,
+        embed_dim=768,
+        predictor_embed_dim=384,
+        depth=6,
+        num_heads=12,
+        mlp_ratio=4.0,
+        qkv_bias=True,
+        qk_scale=None,
+        drop_rate=0.0,
+        attn_drop_rate=0.0,
+        drop_path_rate=0.0,
+        norm_layer=nn.LayerNorm,
+        init_std=0.02,
+        **kwargs
+    ):
+        super().__init__()
+        self.predictor_embed = nn.Linear(embed_dim, predictor_embed_dim, bias=True)
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, predictor_embed_dim))
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+        # --
+        self.predictor_pos_embed = nn.Parameter(torch.zeros(1, num_patches, predictor_embed_dim),
+                                                requires_grad=False)
+        predictor_pos_embed = get_2d_sincos_pos_embed(self.predictor_pos_embed.shape[-1],
+                                                      int(num_patches**.5),
+                                                      cls_token=False)
+        self.predictor_pos_embed.data.copy_(torch.from_numpy(predictor_pos_embed).float().unsqueeze(0))
+        # --
+        self.predictor_blocks = nn.ModuleList([
+            Block(
+                dim=predictor_embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
+                drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer)
+            for i in range(depth)])
+        self.predictor_norm = norm_layer(predictor_embed_dim)
+        self.predictor_proj = nn.Linear(predictor_embed_dim, embed_dim, bias=True)
+        # ------
+        self.init_std = init_std
+        trunc_normal_(self.mask_token, std=self.init_std)
+        self.apply(self._init_weights)
+        self.fix_init_weight()
+
+    def fix_init_weight(self):
+        def rescale(param, layer_id):
+            param.div_(math.sqrt(2.0 * layer_id))
+
+        for layer_id, layer in enumerate(self.predictor_blocks):
+            rescale(layer.attn.proj.weight.data, layer_id + 1)
+            rescale(layer.mlp.fc2.weight.data, layer_id + 1)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=self.init_std)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+        elif isinstance(m, nn.Conv2d):
+            trunc_normal_(m.weight, std=self.init_std)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x, masks_x, masks):
+        print(f"x shape: {x.shape}")
+        print(f"masks_x shape: {masks_x.shape}")
+        print(f"masks shape: {masks.shape}")
+        assert (masks is not None) and (masks_x is not None), 'Cannot run predictor without mask indices'
+
+        if not isinstance(masks_x, list):
+            masks_x = [masks_x]
+
+        if not isinstance(masks, list):
+            masks = [masks]
+
+        # -- Batch Size
+        B = len(x) // len(masks_x) # masks_x is list so B = len(x) = Batch size
+
+        # -- map from encoder-dim to pedictor-dim
+        x = self.predictor_embed(x)
+        print(f"x shape after `x = self.predictor_embed(x)`: {x.shape}")
+
+        # -- add positional embedding to x tokens
+        x_pos_embed = self.predictor_pos_embed.repeat(B, 1, 1) # 
+        print(f"self.predictor_pos_embed shape: {self.predictor_pos_embed.shape}")
+        print(f"x_pos_embed shape: {x_pos_embed.shape}")
+        
+        x += apply_masks(x_pos_embed, masks_x)  # x_pos_embed shape is (B, number_of_patches, H) so change to (B, MaskSize, H)
+
+        _, N_ctxt, D = x.shape
+
+        # -- concat mask tokens to x
+        pos_embs = self.predictor_pos_embed.repeat(B, 1, 1)
+        print(f"Original {pos_embs.shape=}")
+        pos_embs = apply_masks(pos_embs, masks)
+        
+        print(f"Apply masked {pos_embs.shape=} (target masks: {masks=})")
+        # print('\n\n', pos_embs)
+        pos_embs = repeat_interleave_batch(pos_embs, B, repeat=len(masks_x))
+        # print('\n\n', pos_embs)
+        
+        print(f"pos_embs after repeat interleaved {B=} {pos_embs.shape=}")
+        
+        # --
+        pred_tokens = self.mask_token.repeat(pos_embs.size(0), pos_embs.size(1), 1) # Duplicate mask_token: from (1, 1, H) to (B, pred_masks, H)
+        print(f"{self.mask_token.shape=}")
+        print(f"{self.mask_token=}")
+        print(f"{pred_tokens.shape=}")
+        print(f"{pred_tokens=}")
+        # --
+        pred_tokens += pos_embs
+        
+        print(f"x Before repeat {x.shape=}")
+        x = x.repeat(len(masks), 1, 1)
+        print(f"x After repeat {x.shape=}")
+        
+        x = torch.cat([x, pred_tokens], dim=1)
+        print(f"x After concat with pred_tokens {x.shape=}")
+
+        # -- fwd prop
+        for blk in self.predictor_blocks:
+            x = blk(x)
+        x = self.predictor_norm(x)
+        print(f"x After transformer {x.shape=}")
+
+        # -- return preds for mask tokens
+        x = x[:, N_ctxt:]
+        print(f"x After x[:, N_ctxt:] {x.shape=} ({N_ctxt=})")
+        x = self.predictor_proj(x)
+        print(f"x After Proj {x.shape=}")
 
         return x
 
@@ -447,6 +585,16 @@ def vit_predictor(**kwargs):
         **kwargs)
     return model
 
+def vit_predictor_test(**kwargs):
+    model = VisionTransformerPredictor(
+        mlp_ratio=4, qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6),
+        **kwargs)
+    return model
+
+def vit_test(**kwargs):
+    model = VisionTransformer(
+        qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
 
 def vit_tiny(patch_size=16, **kwargs):
     model = VisionTransformer(

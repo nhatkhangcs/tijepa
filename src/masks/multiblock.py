@@ -167,4 +167,8 @@ class MaskCollator(object):
         collated_masks_enc = [[cm[:min_keep_enc] for cm in cm_list] for cm_list in collated_masks_enc]
         collated_masks_enc = torch.utils.data.default_collate(collated_masks_enc)
 
+        # check size of each batch
+        # print('collated_batch:', collated_batch.shape)
+        # print('collated_masks_enc:', collated_masks_enc.shape)
+        # print('collated_masks_pred:', collated_masks_pred.shape)
         return collated_batch, collated_masks_enc, collated_masks_pred

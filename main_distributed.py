@@ -14,7 +14,7 @@ import yaml
 
 import submitit
 
-from src.train import main as app_main
+from src.train_check_dataset import main as app_main
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger()

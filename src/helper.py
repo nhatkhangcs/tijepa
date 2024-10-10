@@ -68,7 +68,7 @@ def load_checkpoint(
 def init_model(
     device,
     patch_size=16,
-    model_name='vit_base',
+    model_name='vit_tiny',
     crop_size=224,
     pred_depth=6,
     pred_emb_dim=384
