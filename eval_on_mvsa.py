@@ -33,14 +33,14 @@ class MVSA:
             images_list = []
             local_path = os.path.join(MVSA.MVSA_SINGLE_PATH, cls, 'image')
             for file_name in os.listdir(local_path):
-                images_list.append(os.path.join(local_path, file_name))
+                images_list.append(os.path.join(local_path, file_name).replace('/', '='))
             self.mvsa_dict['single'][cls] = images_list
         
         for cls in os.listdir(MVSA.MVSA_MULTIPLE_PATH):
             images_list = []
             local_path = os.path.join(MVSA.MVSA_MULTIPLE_PATH, cls, 'image')
             for file_name in os.listdir(local_path):
-                images_list.append(os.path.join(local_path, file_name))
+                images_list.append(os.path.join(local_path, file_name).replace('/', '='))
             self.mvsa_dict['multiple'][cls] = images_list
         
         # for cls in self.mvsa_dict['single']:
@@ -59,7 +59,7 @@ class MVSA:
 
         print(f"Total dataset after init: {len(self.dataset)=}")
         
-    def upsamplng(self):
+    def upsampling(self):
 
         self.dataset = []
 
@@ -97,6 +97,13 @@ class MVSA:
 
         print(f"Total dataset: {len(self.dataset)=}")
 
+        all_tensors = os.listdir('tensors/tenk/10-epoch')
+        for img, cls in self.dataset:
+            if img.replace('jpg', 'pt') not in all_tensors:
+                print(f"{img} not in tensors/tenk/10-epoch")
+                self.dataset.remove((img, cls))
+
+
     def shuffle(self, seed = 69):
         random.seed(seed)
         random.shuffle(self.dataset)
@@ -111,6 +118,9 @@ class MVSA:
         self.train_set = self.dataset[:train_len]
         self.val_set = self.dataset[train_len:train_len + val_len]
         self.test_set = self.dataset[train_len + val_len:]
+
+    def __len__(self): # length of the dataset
+        return len(self.dataset) // self.batch_size + 1
     
     def __iter__(self): # iter on the dataset
         self.current_idx = 0
@@ -130,11 +140,11 @@ class MVSA:
                     image_path, _ = self.dataset[idx]
                     text_path = image_path.replace('image', 'text').replace('jpg', 'txt')
                     
-                    image = Image.open(image_path).convert('RGB')  # Open image and convert to RGB
+                    image = Image.open(image_path.replace('=', '/')).convert('RGB')  # Open image and convert to RGB
                     image = self.transform(image)  # Apply the transformation
                     
                     # Load text
-                    with open(text_path, 'r', encoding='unicode_escape') as file:
+                    with open(text_path.replace('=', '/'), 'r', encoding='unicode_escape') as file:
                         text = file.read()
 
                 except Exception as e: 
@@ -246,8 +256,12 @@ def encode_dataset(
                     images, captions, text_encoder, vision_encoder, target_crosser
                 )
                 for embedding, image_path in zip(embeddings, images_paths):
-                    torch.save(embedding, os.path.join(save_path, image_path.split('/')[-1].replace('jpg', 'pt')))
+                    torch.save(embedding, os.path.join(save_path, image_path.replace('jpg', 'pt')))
 
+            pbar.set_postfix({
+                'MEM': torch.cuda.max_memory_allocated() / 1024.**3,
+                'len': len(images_paths),
+            })
 
 def train_simple_linear_module(
         save_path,
@@ -264,7 +278,7 @@ def train_simple_linear_module(
         img_size = 224,
         device = device,
     )
-    ds.upsamplng()
+    ds.upsampling()
     ds.shuffle()
     ds.split()
 
@@ -293,7 +307,7 @@ def train_simple_linear_module(
 
                 # Embed
                 embeddings = torch.stack([
-                    torch.load(os.path.join(save_path, image_path.split('/')[-1].replace('jpg', 'pt')))
+                    torch.load(os.path.join(save_path, image_path.replace('jpg', 'pt')))
                     for image_path in images_paths
                 ]).to(device)
 
@@ -380,29 +394,3 @@ def train_simple_linear_module(
             )
 
     
-                
-
-if __name__ == "__main__":
-    transform=transforms.Compose(
-        [
-            transforms.Resize((224, 224)), 
-            transforms.ToTensor()
-        ]
-    ),
-    ds = MVSA(
-        batch_size = 1000,
-        img_size = 224,
-        transform = transform,
-        device = 'cuda:0',
-    )
-    ds.upsamplng()
-    ds.shuffle()
-    ds.split()
-
-    for batch in ds.iter_path('train'):  
-        V, T, C = batch
-
-        print(f"{V.shape=}, {len(T)=}, {C.shape=}")
-        print(f"{V[0]=}, {T[0]=}, {C[0]=}")
-
-

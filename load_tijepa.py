@@ -129,6 +129,5 @@ def inference(images, captions, text_encoder, vision_encoder, target_crosser):
 
     # Average pooling the cross_encoded_target
     cross_encoded_target = cross_encoded_target.mean(dim=1)
-    print(f"{cross_encoded_target.shape=}")
     
     return cross_encoded_target

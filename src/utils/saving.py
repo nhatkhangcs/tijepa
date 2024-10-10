@@ -44,6 +44,10 @@ class Saver:
         for metric in self.metrics.keys():
             metric_imgs_path = os.path.join(self.folder_path, metric)
             os.makedirs(metric_imgs_path)
+
+        # Create temp path
+        self.temp_path = os.path.join(self.folder_path, 'temp')
+        os.makedirs(self.temp_path)
             
         
     def update_metric(self, items: dict):
@@ -52,7 +56,7 @@ class Saver:
                 assert False, f"{key} is not a valid metric. Available metrics: {self.metrics.keys()}"
             self.metrics[key].append(value)
         
-    def save_epoch(self):
+    def save_epoch(self, temp=False):
         for metric, records in self.metrics.items():
             batches = list(range(1, len(records) + 1))
 
@@ -65,24 +69,35 @@ class Saver:
             plt.grid(True)
             plt.legend()
 
-            # Save the plot to the specified path
-            plt.savefig(
-                os.path.join(
-                    self.folder_path, 
-                    metric, 
-                    f"epoch-{self.current_epoch}.png"
-                ), 
-                bbox_inches='tight'
-            )  # Save the plot as loss.png in the assets folder
+            if temp:
+                # Save the plot to the specified path
+                plt.savefig(
+                    os.path.join(
+                        self.temp_path, 
+                        f"epoch-{self.current_epoch}-{metric}.png"
+                    ), 
+                    bbox_inches='tight'
+                )
+            else:
+                # Save the plot to the specified path
+                plt.savefig(
+                    os.path.join(
+                        self.folder_path, 
+                        metric, 
+                        f"epoch-{self.current_epoch}.png"
+                    ), 
+                    bbox_inches='tight'
+                )  # Save the plot as loss.png in the assets folder
 
             # Clear the plot after saving
             plt.close()
-            
-        self.current_epoch += 1
+        
+        if not temp:
+            self.current_epoch += 1
 
     def save_checkpoint(self, save_dict: dict, epoch: int):
         torch.save(
-            save_dict, 
+            save_dict | self.metrics, 
             os.path.join(self.folder_path, f"epoch-{epoch}.pt")
         )
         

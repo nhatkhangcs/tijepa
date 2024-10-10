@@ -10,6 +10,7 @@ from src.models import modules
 from src.models.modules import text_encoder_model, x_t2i_module, vit_predictor
 from src.utils.tensors import apply_masks, repeat_interleave_batch
 from src.helper import init_opt
+from src.utils.losses import similarity_matrix, contrastive_loss, clip_loss
 
 from create_dataset import ImageTextDataset
 from src.masks.multiblock import MaskCollator
@@ -242,8 +243,14 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
         del saved_dict
 
     saver = Saver(
-        metrics = ['loss'],
-        folder_name = 't40',
+        metrics = [
+            'loss', 
+            'p_loss', 
+            'c_loss',
+            # 'mem0',
+            # 'mem1'
+        ],
+        folder_name = 'p+c',
         current_epoch = start_epoch,
         **asdict(MODEL_CONFIG)
     )
@@ -259,14 +266,17 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
         # Initialize tqdm for the dataset
         with tqdm(dataset, desc=f"Epoch {epoch+1}/{num_epochs}") as pbar:
             for images, captions, context_masks, predict_masks in pbar:
-                visualize_rectangle(
-                    context_masks[0].tolist(), 
-                    predict_masks[0].tolist(),
-                )
+                # visualize_rectangle(
+                #     context_masks[0].tolist(), 
+                #     predict_masks[0].tolist(),
+                # )
                 # print(images)
                 # print(captions)
                 # Zero the gradients
                 total_loss = 0
+                total_c_loss = 0
+                total_p_loss = 0
+
                 optimizer.zero_grad()
                 _new_lr = scheduler.step()
                 _new_wd = wd_scheduler.step()
@@ -293,7 +303,11 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
 
                             # start_time = time.time()
                             # print(f"Moving images to {DEVICE_1}...")
+                            # for idx, record in enumerate(encoded_image_full):
+                            #     print(idx, record[0][:3], record.shape)
                             encoded_image_masked = apply_masks(encoded_image_full, mini_context_masks).to(DEVICE_1)  # Apply context mask
+                            # for idx, record in enumerate(encoded_image_masked):
+                            #     print(idx, record[0][:3], record.shape)
                 
                             mini_context_masks = mini_context_masks.to(DEVICE_1)
                             # print(f"\tDone in {time.time() - start_time} seconds")  
@@ -336,48 +350,83 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
                         # start_time = time.time()
                         # print(f"Normalizing target...")
                         target = F.layer_norm(cross_encoded_target, (cross_encoded_target.size(-1),))  # Normalize the target
+                   
 
                         # print(mini_predict_masks[0])
                         # print(len(mini_predict_masks[0]))
                         # print(f"{target.shape=}")
                         # for idx, patch in enumerate(target[0]):
                         #     print(idx, patch[:3])
+                        # for idx, record in enumerate(target):
+                        #     print(idx, record[0][:3])
                         
-
+                        # print(mini_predict_masks)
                         target = apply_masks(target, mini_predict_masks)  # Apply predict mask
-                        # for idx, patch in enumerate(target[0]):
-                        #     print(idx, patch[:3])
+                        # print_tensor_with_precision(target[0][0][:10])
+                        # print_tensor_with_precision(target[0][1][:10])
+                        # print_tensor_with_precision(target[0][2][:10])
+                        # print_tensor_with_precision(target[0][3][:10])
+                        # print_tensor_with_precision(target[0][4][:10])
+                        # print_tensor_with_precision(target[0][5][:10])
+                        
+                        # print_tensor_with_precision(target[1][0][:10])
+                        # print_tensor_with_precision(target[1][1][:10])
+                        # print_tensor_with_precision(target[1][2][:10])
+                        # print_tensor_with_precision(target[1][3][:10])
+                        # print_tensor_with_precision(target[1][4][:10])
+                        # print_tensor_with_precision(target[1][5][:10])
+                        # print()
+
+                        # for idx, record in enumerate(target):
+                        #     print(idx, record[0][:3])
 
                         # print(f"After mask: {target.shape=}")
                         # print(f"\tDone in {time.time() - start_time} seconds")
                         
                         # Calculate loss (L1 loss here)
                         p_loss = F.smooth_l1_loss(predicted, target)
-                        loss = p_loss 
+
+                        representation_predicted = predicted.mean(dim=1)
+                        representation_target = target.mean(dim=1)
+
+                        # print_tensor_with_precision(representation_predicted[0][:10])
+                        # print_tensor_with_precision(representation_predicted[1][:10])
+                        # print_tensor_with_precision(representation_target[0][:10])
+                        # print_tensor_with_precision(representation_target[1][:10])
+
+                        c_loss = clip_loss(representation_predicted, representation_target, temperature=1.0)
+                        # print(f"{c_loss.tolist()=}")
+                        loss = c_loss + p_loss
 
                         print_tensor_with_precision(target[0][0][:10])
                         print_tensor_with_precision(predicted[0][0][:10])
-                        print_tensor_with_precision(cross_encoded_context[0][0][:10])
+                        # print_tensor_with_precision(cross_encoded_context[0][0][:10])
                         print()
                         print_tensor_with_precision(target[0][1][:10])
                         print_tensor_with_precision(predicted[0][1][:10])
-                        print_tensor_with_precision(cross_encoded_context[0][1][:10])
+                        # print_tensor_with_precision(cross_encoded_context[0][1][:10])
                         print()
                         print_tensor_with_precision(target[1][10][:10])
                         print_tensor_with_precision(predicted[1][10][:10])
-                        print_tensor_with_precision(cross_encoded_context[1][10][:10])
+                        # print_tensor_with_precision(cross_encoded_context[1][10][:10])
                         print()
                         print_tensor_with_precision(target[1][20][:10])
                         print_tensor_with_precision(predicted[1][20][:10])
-                        print_tensor_with_precision(cross_encoded_context[1][20][:10])
-                        print()
+                        # print_tensor_with_precision(cross_encoded_context[1][20][:10])
+                        print('--')
 
                         saver.update_metric(
                             {
-                                'loss': loss.tolist()
+                                'loss': loss.tolist(),
+                                'p_loss': p_loss.tolist(),
+                                'c_loss': c_loss.tolist(),
+                                # 'mem0': torch.cuda.max_memory_allocated(DEVICE_0) / 1024.**3,
+                                # 'mem1': torch.cuda.max_memory_allocated(DEVICE_1) / 1024.**3
                             }
                         )
                         total_loss += loss.item()
+                        total_c_loss += c_loss.item()
+                        total_p_loss += p_loss.item()
                         
                         # start_time = time.time()
                         # Backward pass
@@ -399,15 +448,15 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
                     for param_q, param_k in zip(context_crosser.parameters(), target_crosser.parameters()):
                         param_k.data.mul_(m).add_((1.-m) * param_q.to(DEVICE_0).detach().data)
                 # print(f"\tDone in {time.time() - start_time} seconds")
+
+                saver.save_epoch(temp=True)
                         
                 # Update tqdm description with current loss values
                 pbar.set_postfix({
-                    'MEM': torch.cuda.max_memory_allocated() / 1024.**3,
-                    'P Loss': total_loss,
-                    # 'Clip Loss': c_loss.item()
-                    # 'Siamese Loss': simamese_loss.item(),
-                    # 'Hinge Loss': hinge_loss.item()
-                    # 'Total Loss': loss.item()
+                    'MEM': torch.cuda.max_memory_allocated(DEVICE_0) / 1024.**3 + torch.cuda.max_memory_allocated(DEVICE_1) / 1024.**3,
+                    'loss': total_loss,
+                    'P': total_p_loss,
+                    'C': total_c_loss
                 })
         
         # train_simple_linear_module(
@@ -434,17 +483,16 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
             saver.save_checkpoint(save_dict, epoch=epoch+1)
             print(f"Saved checkpoint: {save_dict['epoch']}, loss = {save_dict['loss']}")
 
-
 def main():
     train(
-        num_epochs=400, 
-        max_images_per_epoch=40, # 50000 
-        mini_batch_size=40, # 80
-        batch_size=40, # 80*6
-        learning_rate=0.001,
-        save_interval=100,
-        resume_from='trains/t40-1727871049/epoch-300.pt',
+        num_epochs=20, 
+        max_images_per_epoch=None, # 50000 
+        mini_batch_size=80, # 80
+        batch_size=80*10, # 80*6
+        learning_rate=0.003,
+        save_interval=1,
+        resume_from='trains/p+c/epoch-10.pt',
     )
-    
+
 if __name__ == "__main__":
     main()
