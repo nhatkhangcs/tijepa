@@ -14,11 +14,15 @@ class Saver:
         update_by: str = 'iter',
         folder_name: str = str(int(time.time())),
         current_epoch: int = 1,
+        previous_metrics = None,
         **kwargs
     ):
         self.metrics = {
             metric: [] for metric in metrics
         }
+        if previous_metrics:
+            for metric, records in previous_metrics.items():
+                self.metrics[metric] = records
         self.update_by = update_by
         self.folder_name = folder_name
         self.folder_path = os.path.join(Saver.SAVING_PATH, self.folder_name)
@@ -95,11 +99,17 @@ class Saver:
         if not temp:
             self.current_epoch += 1
 
-    def save_checkpoint(self, save_dict: dict, epoch: int):
-        torch.save(
-            save_dict | self.metrics, 
-            os.path.join(self.folder_path, f"epoch-{epoch}.pt")
-        )
+    def save_checkpoint(self, save_dict: dict, epoch: int, target_crosser_only=False):
+        if target_crosser_only:
+            torch.save(
+                save_dict, 
+                os.path.join(self.folder_path, f"tx-epoch-{epoch}.pt")
+            )
+        else:
+            torch.save(
+                save_dict | self.metrics, 
+                os.path.join(self.folder_path, f"epoch-{epoch}.pt")
+            )
         
 
         

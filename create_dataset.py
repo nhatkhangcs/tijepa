@@ -81,6 +81,7 @@ class ImageTextDataset(Dataset):
         assert img_size % patch_size == 0, f"img_size {img_size} is not divisible by patch_size {patch_size}"
         
         self.n_patches = (img_size // patch_size) ** 2
+        print(f"{self.n_patches=}")
         self.all_patches = set(range(self.n_patches))
         
         self.folder_path = image_path
@@ -97,6 +98,7 @@ class ImageTextDataset(Dataset):
             random.shuffle(self.image_filenames)
 
         self.multiblock = MultiBlock(
+            grid_size= img_size // patch_size,
             block_scale=block_scale,
             block_aspect_ratio=block_aspect_ratio,
             device_context_masks = device_context_masks,

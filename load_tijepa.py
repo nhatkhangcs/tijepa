@@ -41,23 +41,25 @@ class ModelConfig:
 MODEL_CONFIG = ModelConfig()
 ##################
 
-def inference(images, captions, text_encoder, vision_encoder, target_crosser, device=DEVICE_0):
-    # Encode the text
-    encoded_text, text_attn_mask = text_encoder(captions)
+# def inference(images, captions, text_encoder, vision_encoder, target_crosser, device=DEVICE_0):
+#     # Encode the text
+#     encoded_text, text_attn_mask = text_encoder(captions)
     
-    # Encode the context patches
-    encoded_image_full = vision_encoder(images)
+#     # Encode the context patches
+#     encoded_image_full = vision_encoder(images)
     
-    # Cross encode the text and context
-    cross_encoded_target = target_crosser(encoded_text, encoded_image_full, text_attn_mask)
+#     # Cross encode the text and context
+#     cross_encoded_target = target_crosser(encoded_text, encoded_image_full, text_attn_mask)
 
-    # Average pooling the cross_encoded_target
-    cross_encoded_target = cross_encoded_target.mean(dim=1)
-    print(f"{cross_encoded_target.shape=}")
+#     # Average pooling the cross_encoded_target
+#     cross_encoded_target = cross_encoded_target.mean(dim=1)
+#     print(f"{cross_encoded_target.shape=}")
     
-    return cross_encoded_target
+#     return cross_encoded_target
 
-def load(checkpoint_path):
+from typing import Literal
+
+def load(checkpoint_path, crosser_type: Literal['target'] | Literal['context'] = 'target'):
     print(f"Init models...")
     # Text Encoder
     text_encoder = text_encoder_model(
@@ -90,7 +92,7 @@ def load(checkpoint_path):
     del encoder_dict
 
     # Target T2I Module
-    target_crosser = x_t2i_module(
+    crosser = x_t2i_module(
         text_embed_dim=MODEL_CONFIG.T_EMBED_DIM,
         vision_embed_dim=MODEL_CONFIG.V_EMBED_DIM,
         hidden_dim=MODEL_CONFIG.H_EMBED_DIM,
@@ -102,22 +104,29 @@ def load(checkpoint_path):
         drop_rate=MODEL_CONFIG.DROP_RATE,
         attn_drop_rate=MODEL_CONFIG.ATTN_DROP_RATE,
     ).to(DEVICE_0)
-    target_crosser_total_params = sum(p.numel() for p in target_crosser.parameters())
-    print(f"{target_crosser_total_params=}")
+    crosser_total_params = sum(p.numel() for p in crosser.parameters())
+    print(f"{crosser_total_params=}")
 
     print('\n\nDone init models\n\n')
 
     print(f"Loading from {checkpoint_path}...")
     saved_dict = torch.load(checkpoint_path, map_location='cpu')
-    target_crosser.load_state_dict(saved_dict['target_crosser'])
+
+    if crosser_type == 'context':
+        crosser.load_state_dict(saved_dict['context_crosser'])
+        print(f"Loaded context_crosser")
+    else:
+        crosser.load_state_dict(saved_dict['target_crosser'])
+        print(f"Loaded target_crosser")
+
     start_epoch = saved_dict['epoch']
     print(f"Loaded from epoch {start_epoch}")
 
     del saved_dict
 
-    return text_encoder, vision_encoder, target_crosser
+    return text_encoder, vision_encoder, crosser
 
-def inference(images, captions, text_encoder, vision_encoder, target_crosser):
+def inference(images, captions, text_encoder, vision_encoder, crosser):
     # Encode the text
     encoded_text, text_attn_mask = text_encoder(captions)
     
@@ -125,7 +134,7 @@ def inference(images, captions, text_encoder, vision_encoder, target_crosser):
     encoded_image_full = vision_encoder(images)
     
     # Cross encode the text and context
-    cross_encoded_target = target_crosser(encoded_text, encoded_image_full, text_attn_mask)
+    cross_encoded_target = crosser(encoded_text, encoded_image_full, text_attn_mask)
 
     # Average pooling the cross_encoded_target
     cross_encoded_target = cross_encoded_target.mean(dim=1)

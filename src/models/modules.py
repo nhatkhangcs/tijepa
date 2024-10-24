@@ -17,7 +17,8 @@ from src.utils.tensors import (
     trunc_normal_,
     repeat_interleave_batch
 )
-from src.masks.utils import apply_masks
+# from src.masks.utils import apply_masks
+from src.utils.tensors import apply_masks
 
 
 def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False):
@@ -308,7 +309,6 @@ class SelfThenCrossBlock(nn.Module):
         # Apply cross-attention between X and Z
         y, _ = self.cross_attn(X, Z, attn_masks)
         X = X + self.drop_path(y)
-        X 
         
         # Apply feed-forward network
         if hasattr(self, 'mlp'):
@@ -328,6 +328,10 @@ class PatchEmbed(nn.Module):
         self.img_size = img_size
         self.patch_size = patch_size
         self.num_patches = num_patches
+
+        print(f"{num_patches=}")
+        print(f"{patch_size=}")
+        print(f"{img_size=}")
 
         self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
 
@@ -447,17 +451,19 @@ class VisionTransformerPredictor(nn.Module):
     def forward(self, x, masks_x, masks):
         assert (masks is not None) and (masks_x is not None), 'Cannot run predictor without mask indices'
 
-        if not isinstance(masks_x, list):
-            masks_x = [masks_x]
+        # if not isinstance(masks_x, list):
+        #     masks_x = [masks_x]
 
-        if not isinstance(masks, list):
-            masks = [masks]
+        # if not isinstance(masks, list):
+        #     masks = [masks]
 
         # -- Batch Size
-        B = len(x) // len(masks_x)
+        B = len(x) # // len(masks_x)
+        # print(f"{B=}")
 
         # -- map from encoder-dim to pedictor-dim
         x = self.predictor_embed(x)
+        # print(x.shape)
 
         # -- add positional embedding to x tokens
         x_pos_embed = self.predictor_pos_embed.repeat(B, 1, 1)
@@ -468,22 +474,36 @@ class VisionTransformerPredictor(nn.Module):
         # -- concat mask tokens to x
         pos_embs = self.predictor_pos_embed.repeat(B, 1, 1)
         pos_embs = apply_masks(pos_embs, masks)
-        pos_embs = repeat_interleave_batch(pos_embs, B, repeat=len(masks_x))
+        # print(f"{pos_embs=}")
+        # print(f"{pos_embs.shape=}")
+        # pos_embs = repeat_interleave_batch(pos_embs, B, repeat=len(masks_x))
         # --
         pred_tokens = self.mask_token.repeat(pos_embs.size(0), pos_embs.size(1), 1)
+        # print(f"{pred_tokens=}")
+        # print(f"{pred_tokens.shape=}")
         # --
+        
         pred_tokens += pos_embs
-        x = x.repeat(len(masks), 1, 1)
+        # print(f"{pred_tokens=}")
+        # print(f"{pred_tokens.shape=}")
+
+        # x = x.repeat(len(masks), 1, 1)
         x = torch.cat([x, pred_tokens], dim=1)
 
         # -- fwd prop
         for blk in self.predictor_blocks:
             x = blk(x)
         x = self.predictor_norm(x)
+        # print(f"{x.shape=}")
 
         # -- return preds for mask tokens
         x = x[:, N_ctxt:]
+        # print(f"{x.shape=}")
+        print(f"BRFORE PROJECT: {x=}")
+
         x = self.predictor_proj(x)
+        # print(f"{x.shape=}")
+        # print(x)
 
         return x
 
@@ -741,6 +761,7 @@ class X_T2I(nn.Module): # Cross Attention from Text to Image
         attn_drop_rate=0.0,
         drop_path_rate=0.0,
         norm_layer=nn.LayerNorm,
+        cross_block: CrossBlock | SelfThenCrossBlock = CrossBlock,
         init_std=0.02,
         **kwargs
     ):
@@ -755,6 +776,10 @@ class X_T2I(nn.Module): # Cross Attention from Text to Image
                     dim_x=hidden_dim, dim_z=text_embed_dim, dim_out=hidden_dim, num_heads=num_heads,
                     mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale, drop=drop_rate,
                     attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer
+                ) if cross_block == SelfThenCrossBlock else
+                CrossBlock(
+                    dim=hidden_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
+                    drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer
                 )
                 for i in range(depth)
             ]
@@ -770,8 +795,10 @@ class X_T2I(nn.Module): # Cross Attention from Text to Image
             param.div_(math.sqrt(2.0 * layer_id))
 
         for layer_id, layer in enumerate(self.blocks):
-            rescale(layer.attn.proj.weight.data, layer_id + 1)
-            rescale(layer.cross_attn.proj.weight.data, layer_id + 1)
+            if hasattr(layer, 'attn'):
+                rescale(layer.attn.proj.weight.data, layer_id + 1)
+            if hasattr(layer, 'cross_attn'):
+                rescale(layer.cross_attn.proj.weight.data, layer_id + 1)
             if hasattr(layer, 'mlp'):
                 rescale(layer.mlp.fc2.weight.data, layer_id + 1)
 
@@ -994,8 +1021,12 @@ class TextEncoder(nn.Module):
     #     scores = (embeddings[:1] @ embeddings[1:].T) * 100
     #     return scores.tolist()
 
-def text_encoder_model(**kwargs):
-    model = TextEncoder(**kwargs)
+def text_encoder_model(model='base', **kwargs):
+    if model == 'base':
+        model = TextEncoder(model_path='Alibaba-NLP/gte-base-en-v1.5', **kwargs)
+    elif model == 'large':
+        model = TextEncoder(model_path='Alibaba-NLP/gte-large-en-v1.5', **kwargs)
+
     return model
 
 

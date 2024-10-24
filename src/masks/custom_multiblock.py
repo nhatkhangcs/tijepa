@@ -4,6 +4,7 @@ import torch
 class MultiBlock:
     def __init__(
             self, 
+            grid_size,
             block_scale=(0.15, 0.2), 
             n_block=4, 
             block_aspect_ratio=(0.75, 1.5), 
@@ -15,7 +16,8 @@ class MultiBlock:
         self.n_block = n_block
         self.block_aspect_ratio = block_aspect_ratio
         self.context_scale = context_scale  # Portion of the image area for context
-        self.grid_size = 14  # 14x14 patches for a 224x224 image
+        self.grid_size = grid_size  # 14x14 patches for a 224x224 image
+        print(f"{self.grid_size=}")
         self.total_patches = self.grid_size * self.grid_size  # 196 patches
         self.device_context_masks = device_context_masks
         self.device_predict_masks = device_predict_masks
