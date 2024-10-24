@@ -1,0 +1,15 @@
+{
+    "SIZE": 224,
+    "PATCH_SIZE": 14,
+    "V_EMBED_DIM": 1280,
+    "T_EMBED_DIM": 768,
+    "H_EMBED_DIM": 768,
+    "PRED_EMBED_DIM": 384,
+    "DROP_RATE": 0.15,
+    "ATTN_DROP_RATE": 0.15,
+    "MLP_RATIO": 4.0,
+    "PRED_ATTN_DEPTH": 12,
+    "CROSS_ATTN_DEPTH": 8,
+    "PRED_NUM_HEADS": 12,
+    "CROSS_NUM_HEADS": 12
+}

@@ -21,8 +21,14 @@ class MVSA:
             transform = None,
         ):
         self.mvsa_dict = {
-            'single': {},
-            'multiple': {}
+            'single': {
+                # 'positive': [],
+                # 'neutral': [],
+                # 'negative': [],
+            },
+            'multiple': {
+
+            }
         }
         self.batch_size = batch_size
         self.img_size = img_size
@@ -58,7 +64,7 @@ class MVSA:
             self.dataset.extend([(img, cls) for img in images_list])
 
         print(f"Total dataset after init: {len(self.dataset)=}")
-        
+
     def upsampling(self):
 
         self.dataset = []
@@ -162,6 +168,8 @@ class MVSA:
                 captions,  # Captions can be processed later
                 images_paths,  # Image paths can be used for debugging
             )
+
+
     
     def iter_path(self, split='train'):
         if split == 'train':
@@ -170,6 +178,9 @@ class MVSA:
             data = self.val_set
         elif split == 'test':
             data = self.test_set
+
+        # Shuffle the data
+        random.shuffle(data)
 
         self.current_idx = 0
 
@@ -218,20 +229,21 @@ def encode_dataset(
         batch_size,
         device,
         save_path,
+        crosser_type='target'
     ):
     # Load the models
-    text_encoder, vision_encoder, target_crosser = load(checkpoint_path)
+    text_encoder, vision_encoder, crosser = load(checkpoint_path, crosser_type)
 
     # Move the models to the device
     text_encoder = text_encoder.to(device)
     text_encoder.device = device
     vision_encoder = vision_encoder.to(device)
-    target_crosser = target_crosser.to(device)
+    crosser = crosser.to(device)
 
     # Set them to eval
     text_encoder.eval()
     vision_encoder.eval()
-    target_crosser.eval()
+    crosser.eval()
 
     transform=transforms.Compose(
         [
@@ -253,7 +265,7 @@ def encode_dataset(
         for images, captions, images_paths in pbar:
             with torch.no_grad():
                 embeddings = inference(
-                    images, captions, text_encoder, vision_encoder, target_crosser
+                    images, captions, text_encoder, vision_encoder, crosser
                 )
                 for embedding, image_path in zip(embeddings, images_paths):
                     torch.save(embedding, os.path.join(save_path, image_path.replace('jpg', 'pt')))
@@ -262,6 +274,8 @@ def encode_dataset(
                 'MEM': torch.cuda.max_memory_allocated() / 1024.**3,
                 'len': len(images_paths),
             })
+
+from src.utils.saving import Saver
 
 def train_simple_linear_module(
         save_path,
@@ -272,15 +286,41 @@ def train_simple_linear_module(
         batch_size=500,
     ):
 
+    saver = Saver(
+        metrics=[
+            'loss', 
+            'train-accuracy', 
+            'train-precision',
+            'train-recall',
+            'train-f1',
+            'val-accuracy',
+            'val-precision',
+            'val-recall',
+            'val-f1',
+            'test-accuracy',
+            'test-precision',
+            'test-recall',
+            'test-f1',
+        ],
+        folder_name='MVSA',
+        **{
+            "save_path": save_path
+        }
+    )
+
     # Create dataset
     ds = MVSA(
         batch_size = batch_size,
         img_size = 224,
         device = device,
     )
-    ds.upsampling()
+    # ds.upsampling()
     ds.shuffle()
     ds.split()
+
+    print(f"{len(ds.train_set)=}")
+    print(f"{len(ds.val_set)=}")
+    print(f"{len(ds.test_set)=}")
 
     # Create a simple linear module
     linear_module = simple_linear_sentiment_module(hidden_size, 3).to(device)
@@ -298,12 +338,27 @@ def train_simple_linear_module(
         linear_module.train()
 
         total_loss = 0
-        total_correct = 0
         total_samples = 0
+        total_true_negative = 0
+        total_true_positive = 0
+        total_false_negative = 0
+        total_false_positive = 0
+
         with tqdm(ds.iter_path('train'), desc=f"Epoch {epoch+1}/{epochs}") as pbar:
             for class_labels, images_paths in pbar:
                 # Zero the gradients
                 optimizer.zero_grad()
+
+                # Check if the images are in the save_path
+                for idx, image_path in enumerate(images_paths):
+                    if not os.path.exists(os.path.join(save_path, image_path.replace('jpg', 'pt'))):
+                        print(f"{image_path} not found")
+
+                        images_paths.pop(idx)
+                        class_labels = torch.cat([
+                            class_labels[:idx],
+                            class_labels[idx+1:]
+                        ], dim=0)
 
                 # Embed
                 embeddings = torch.stack([
@@ -313,6 +368,9 @@ def train_simple_linear_module(
 
                 # Predict
                 predictions = linear_module(embeddings)
+                print(f"{predictions[:5]=}")
+                print(f"{predictions.argmax(dim=1)[:5]}")
+
 
                 # Calculate loss
                 loss = criterion(predictions, class_labels.argmax(dim=1))
@@ -323,23 +381,71 @@ def train_simple_linear_module(
 
                 # Calculate accuracy
                 total_loss += loss.item()
-                total_correct += (predictions.argmax(dim=1) == class_labels.argmax(dim=1)).sum().item()
+                
+
+                pred_classes = predictions.argmax(dim=1)      # Get predicted class indices
+                true_classes = class_labels.argmax(dim=1)     # Get true class indices (assuming one-hot encoded)
+
+                # False Positives: Predicted class is 0, but true class is not 0
+                total_false_positive += ((pred_classes == 0) & (true_classes != 0)).sum().item()
+
+                # False Negatives: Predicted class is not 0, but true class is 0
+                total_false_negative += ((pred_classes != 0) & (true_classes == 0)).sum().item()
+
+                # True Positives: Predicted class is 0 and true class is also 0
+                total_true_positive += ((pred_classes == 0) & (true_classes == 0)).sum().item()
+
+                # True Negatives: Predicted class is not 0 and true class is also not 0
+                total_true_negative += ((pred_classes != 0) & (true_classes != 0)).sum().item()
+
+
                 total_samples += len(class_labels)
+
+                saver.update_metric(
+                    {
+                        'loss': total_loss / total_samples,
+                        'train-accuracy': (total_true_positive + total_true_negative) / total_samples,
+                        'train-precision': total_true_positive / (total_true_positive + total_false_positive),
+                        'train-recall': total_true_positive / (total_true_positive + total_false_negative),
+                        'train-f1': 2 * total_true_positive / (2 * total_true_positive + total_false_positive + total_false_negative),
+                    }
+                )
+                saver.save_epoch(temp=True)
 
                 pbar.set_postfix(
                     loss=total_loss / total_samples,
-                    accuracy=total_correct / total_samples
+                    accuracy=(total_true_positive + total_true_negative) / total_samples,
+                    precision=total_true_positive / (total_true_positive + total_false_positive),
+                    recall=total_true_positive / (total_true_positive + total_false_negative),
+                    f1=2 * total_true_positive / (2 * total_true_positive + total_false_positive + total_false_negative),
                 )
+
+
     
         # Validate the model
         linear_module.eval()
 
         total_loss = 0
-        total_correct = 0
         total_samples = 0
+        total_true_negative = 0
+        total_true_positive = 0
+        total_false_negative = 0
+        total_false_positive = 0
 
         with tqdm(ds.iter_path('val'), desc=f"Validation") as pbar:
             for class_labels, images_paths in pbar:
+
+                 # Check if the images are in the save_path
+                for idx, image_path in enumerate(images_paths):
+                    if not os.path.exists(os.path.join(save_path, image_path.replace('jpg', 'pt'))):
+                        print(f"{image_path} not found")
+
+                        images_paths.pop(idx)
+                        class_labels = torch.cat([
+                            class_labels[:idx],
+                            class_labels[idx+1:]
+                        ], dim=0)
+
                 # Embed
                 embeddings = torch.stack([
                     torch.load(os.path.join(save_path, image_path.split('/')[-1].replace('jpg', 'pt')))
@@ -348,29 +454,74 @@ def train_simple_linear_module(
 
                 # Predict
                 predictions = linear_module(embeddings)
+                print(f"{predictions[:5]=}")
+                print(f"{predictions.argmax(dim=1)[:5]}")
 
                 # Calculate loss
                 loss = criterion(predictions, class_labels.argmax(dim=1))
 
                 # Calculate accuracy
                 total_loss += loss.item()
-                total_correct += (predictions.argmax(dim=1) == class_labels.argmax(dim=1)).sum().item()
+
+                pred_classes = predictions.argmax(dim=1)      # Get predicted class indices
+                true_classes = class_labels.argmax(dim=1)     # Get true class indices (assuming one-hot encoded)
+
+                # False Positives: Predicted class is 0, but true class is not 0
+                total_false_positive += ((pred_classes == 0) & (true_classes != 0)).sum().item()
+
+                # False Negatives: Predicted class is not 0, but true class is 0
+                total_false_negative += ((pred_classes != 0) & (true_classes == 0)).sum().item()
+
+                # True Positives: Predicted class is 0 and true class is also 0
+                total_true_positive += ((pred_classes == 0) & (true_classes == 0)).sum().item()
+
+                # True Negatives: Predicted class is not 0 and true class is also not
+                total_true_negative += ((pred_classes != 0) & (true_classes != 0)).sum().item()
+                
                 total_samples += len(class_labels)
+
+                saver.update_metric(
+                    {
+                        'val-accuracy': (total_true_positive + total_true_negative) / total_samples,
+                        'val-precision': total_true_positive / (total_true_positive + total_false_positive),
+                        'val-recall': total_true_positive / (total_true_positive + total_false_negative),
+                        'val-f1': 2 * total_true_positive / (2 * total_true_positive + total_false_positive + total_false_negative),
+                    }
+                )
 
                 pbar.set_postfix(
                     loss=total_loss / total_samples,
-                    accuracy=total_correct / total_samples
+                    accuracy=(total_true_positive + total_true_negative) / total_samples,
+                    precision=total_true_positive / (total_true_positive + total_false_positive),
+                    recall=total_true_positive / (total_true_positive + total_false_negative),
+                    f1=2 * total_true_positive / (2 * total_true_positive + total_false_positive + total_false_negative),
                 )
+
+        saver.save_epoch()
     
     # Test the model
     linear_module.eval()
 
     total_loss = 0
-    total_correct = 0
     total_samples = 0
+    total_true_negative = 0
+    total_true_positive = 0
+    total_false_negative = 0
+    total_false_positive = 0
 
     with tqdm(ds.iter_path('test'), desc=f"Testing") as pbar:
         for class_labels, images_paths in pbar:
+            # Check if the images are in the save_path
+            for idx, image_path in enumerate(images_paths):
+                if not os.path.exists(os.path.join(save_path, image_path.replace('jpg', 'pt'))):
+                    print(f"{image_path} not found")
+
+                    images_paths.pop(idx)
+                    class_labels = torch.cat([
+                        class_labels[:idx],
+                        class_labels[idx+1:]
+                    ], dim=0)
+
             # Embed
             embeddings = torch.stack([
                 torch.load(os.path.join(save_path, image_path.split('/')[-1].replace('jpg', 'pt')))
@@ -385,12 +536,40 @@ def train_simple_linear_module(
 
             # Calculate accuracy
             total_loss += loss.item()
-            total_correct += (predictions.argmax(dim=1) == class_labels.argmax(dim=1)).sum().item()
+
+            pred_classes = predictions.argmax(dim=1)      # Get predicted class indices
+            true_classes = class_labels.argmax(dim=1)
+
+            # False Positives: Predicted class is 0, but true class is not 0
+            total_false_positive += ((pred_classes == 0) & (true_classes != 0)).sum().item()
+
+            # False Negatives: Predicted class is not 0, but true class is 0
+            total_false_negative += ((pred_classes != 0) & (true_classes == 0)).sum().item()
+
+            # True Positives: Predicted class is 0 and true class is also 0
+            total_true_positive += ((pred_classes == 0) & (true_classes == 0)).sum().item()
+
+            # True Negatives: Predicted class is not 0 and true class is also not
+            total_true_negative += ((pred_classes != 0) & (true_classes != 0)).sum().item()
+
             total_samples += len(class_labels)
+
+            saver.update_metric(
+                {
+                    'test-accuracy': (total_true_positive + total_true_negative) / total_samples,
+                    'test-precision': total_true_positive / (total_true_positive + total_false_positive),
+                    'test-recall': total_true_positive / (total_true_positive + total_false_negative),
+                    'test-f1': 2 * total_true_positive / (2 * total_true_positive + total_false_positive + total_false_negative),
+                }
+            )
 
             pbar.set_postfix(
                 loss=total_loss / total_samples,
-                accuracy=total_correct / total_samples
+                accuracy=(total_true_positive + total_true_negative) / total_samples,
+                precision=total_true_positive / (total_true_positive + total_false_positive),
+                recall=total_true_positive / (total_true_positive + total_false_negative),
+                f1=2 * total_true_positive / (2 * total_true_positive + total_false_positive + total_false_negative),
             )
+
 
     
