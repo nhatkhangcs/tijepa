@@ -12,14 +12,14 @@ from src.models.modules import text_encoder_model, x_t2i_module, vit_predictor
 DEVICE_0 = 'cuda:0'
 
 ##################
-with open('configs/in1k_vith14_ep300.yaml', 'r') as y_file:
+with open('configs/in1k_vith16-448_ep300.yaml', 'r') as y_file:
     params = yaml.load(y_file, Loader=yaml.FullLoader)
     pp = pprint.PrettyPrinter(indent=4)
     pp.pprint(params)
 
 @dataclass
 class ModelConfig:
-    SIZE: int = 224
+    SIZE: int = 448
     PATCH_SIZE: int = params['mask']['patch_size']
 
     V_EMBED_DIM: int = 1280
@@ -32,10 +32,10 @@ class ModelConfig:
     MLP_RATIO: float = 4.0
 
     PRED_ATTN_DEPTH: int = params['meta']['pred_depth']
-    CROSS_ATTN_DEPTH: int = 8
+    CROSS_ATTN_DEPTH: int = 4
 
     PRED_NUM_HEADS: int = 12
-    CROSS_NUM_HEADS: int = 12
+    CROSS_NUM_HEADS: int = 8
 
 MODEL_CONFIG = ModelConfig()
 ##################
@@ -58,7 +58,7 @@ MODEL_CONFIG = ModelConfig()
 
 from typing import Literal
 
-def load(checkpoint_path, crosser_type: Literal['target'] | Literal['context'] = 'target'):
+def load_448(checkpoint_path, crosser_type: Literal['target'] | Literal['context'] = 'target'):
     print(f"Init models...")
     # Text Encoder
     text_encoder = text_encoder_model(
@@ -77,7 +77,7 @@ def load(checkpoint_path, crosser_type: Literal['target'] | Literal['context'] =
     context_vision_encoder_total_params = sum(p.numel() for p in vision_encoder.parameters())
     print(f"{context_vision_encoder_total_params=}")
 
-    TAR_FILE = "IN1K-vit.h.14-300e.pth.tar"
+    TAR_FILE = "IN1K-vit.h.16-448px-300e.pth.tar"
     print(f"Loading Vision Encoder {TAR_FILE}...")
     checkpoint = torch.load(TAR_FILE, map_location=torch.device(DEVICE_0))
     encoder_dict = checkpoint['target_encoder'] if 'target_encoder' in checkpoint else checkpoint['encoder']
@@ -125,7 +125,7 @@ def load(checkpoint_path, crosser_type: Literal['target'] | Literal['context'] =
 
     return text_encoder, vision_encoder, crosser
 
-def inference(images, captions, text_encoder, vision_encoder, crosser):
+def inference_448(images, captions, text_encoder, vision_encoder, crosser):
     # Encode the text
     encoded_text, text_attn_mask = text_encoder(captions)
     

@@ -3,11 +3,12 @@ import random
 import yaml
 import pprint
 import copy
+import time
 
 from dataclasses import dataclass, asdict
 
 from src.models import modules
-from src.models.modules import text_encoder_model, x_t2i_module, vit_predictor, get_projection_head
+from src.models.modules import text_encoder_model, x_t2i_module, vit_predictor
 from src.utils.tensors import apply_masks, repeat_interleave_batch
 from src.helper import init_opt
 from src.utils.losses import similarity_matrix, contrastive_loss, clip_loss, max_margin_loss, max_margin_loss_negative_only, weighted_max_margin_loss
@@ -36,15 +37,12 @@ with open('configs/in1k_vith14_ep300.yaml', 'r') as y_file:
 
 @dataclass
 class ModelConfig:
-    SIZE: int = 224
+    SIZE: int = params['data']['crop_size']
     PATCH_SIZE: int = params['mask']['patch_size']
 
     V_EMBED_DIM: int = 1280
     T_EMBED_DIM: int = 768
     H_EMBED_DIM: int = 768
-    PROJECTION_H_DIM: int = 2048
-    PROJECTION_O_DIM: int = 128
-    PROJECTION_DEPTH: int = 2
     PRED_EMBED_DIM: int = params['meta']['pred_emb_dim']
 
     DROP_RATE: float = 0.15
@@ -52,10 +50,10 @@ class ModelConfig:
     MLP_RATIO: float = 4.0
 
     PRED_ATTN_DEPTH: int = params['meta']['pred_depth']
-    CROSS_ATTN_DEPTH: int = 4
+    CROSS_ATTN_DEPTH: int = 8
 
     PRED_NUM_HEADS: int = 12
-    CROSS_NUM_HEADS: int = 8
+    CROSS_NUM_HEADS: int = 12
 
 MODEL_CONFIG = ModelConfig()
 ##################
@@ -91,10 +89,11 @@ del checkpoint
 del encoder_dict
 
 # Context T2I Module
-context_crosser = x_t2i_module(
-    text_embed_dim=MODEL_CONFIG.T_EMBED_DIM,
-    vision_embed_dim=MODEL_CONFIG.V_EMBED_DIM,
-    hidden_dim=MODEL_CONFIG.H_EMBED_DIM,
+context_crosser = better_x_t2i_module(
+    dim_T=MODEL_CONFIG.T_EMBED_DIM,
+    dim_V=MODEL_CONFIG.V_EMBED_DIM,
+    dim_h=MODEL_CONFIG.PRED_EMBED_DIM,
+    dim_out=MODEL_CONFIG.H_EMBED_DIM,
     depth=MODEL_CONFIG.CROSS_ATTN_DEPTH,
     num_heads=MODEL_CONFIG.CROSS_NUM_HEADS,
     mlp_ratio=MODEL_CONFIG.MLP_RATIO,
@@ -107,10 +106,11 @@ context_crosser_total_params = sum(p.numel() for p in context_crosser.parameters
 print(f"{context_crosser_total_params=}")
 
 # Target T2I Module
-target_crosser = x_t2i_module(
-    text_embed_dim=MODEL_CONFIG.T_EMBED_DIM,
-    vision_embed_dim=MODEL_CONFIG.V_EMBED_DIM,
-    hidden_dim=MODEL_CONFIG.H_EMBED_DIM,
+target_crosser = better_x_t2i_module(
+    dim_T=MODEL_CONFIG.T_EMBED_DIM,
+    dim_V=MODEL_CONFIG.V_EMBED_DIM,
+    dim_h=MODEL_CONFIG.PRED_EMBED_DIM,
+    dim_out=MODEL_CONFIG.H_EMBED_DIM,
     depth=MODEL_CONFIG.CROSS_ATTN_DEPTH,
     num_heads=MODEL_CONFIG.CROSS_NUM_HEADS,
     mlp_ratio=MODEL_CONFIG.MLP_RATIO,
@@ -142,15 +142,6 @@ predictor = vit_predictor(
 predictor_total_params = sum(p.numel() for p in predictor.parameters())
 print(f"{predictor_total_params=}")
 
-# Projection Head
-projection_head = get_projection_head(
-    in_dim=MODEL_CONFIG.H_EMBED_DIM,
-    hidden_dim=MODEL_CONFIG.PROJECTION_H_DIM,
-    out_dim=MODEL_CONFIG.PROJECTION_O_DIM,
-    num_layers=MODEL_CONFIG.PROJECTION_DEPTH,
-).to(DEVICE_1)
-projection_head_total_params = sum(p.numel() for p in projection_head.parameters())
-print(f"{projection_head_total_params=}")
 
 def inference(images, captions, text_encoder, vision_encoder, target_crosser, device=DEVICE_0):
     # Encode the text
@@ -218,7 +209,6 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
     optimizer, scaler, scheduler, wd_scheduler = init_opt(
         encoder=context_crosser,
         predictor=predictor,
-        projection_head=projection_head,
         iterations_per_epoch=ipe,
         wd=wd,
         final_wd=final_wd,
@@ -245,7 +235,6 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
         context_crosser.load_state_dict(saved_dict['context_crosser'])
         predictor.load_state_dict(saved_dict['predictor'])
         target_crosser.load_state_dict(saved_dict['target_crosser'])
-        projection_head.load_state_dict(saved_dict['projection_head'])
 
         optimizer.load_state_dict(saved_dict['opt'])
         scaler.load_state_dict(saved_dict['scaler'])
@@ -262,7 +251,6 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
         previous_metrics = {}
         previous_metrics['loss'] = saved_dict['loss']
         previous_metrics['p_loss'] = saved_dict['p_loss']
-        previous_metrics['c_loss'] = saved_dict['c_loss']
         print(f"Loaded previous metrics: {len(previous_metrics['loss'])} records")
 
         del saved_dict
@@ -271,11 +259,10 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
         metrics = [
             'loss', 
             'p_loss', 
-            'c_loss',
             # 'mem0',
             # 'mem1'
         ],
-        folder_name = 'proj',
+        folder_name = 'P-10k',
         current_epoch = start_epoch,
         previous_metrics = previous_metrics,
         **asdict(MODEL_CONFIG)
@@ -288,27 +275,29 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
         # Set the models to train mode
         context_crosser.train()
         predictor.train()
-        projection_head.train()
 
         # Initialize tqdm for the dataset
         with tqdm(dataset, desc=f"Epoch {epoch+1}/{num_epochs}") as pbar:
             for images, captions, context_masks, predict_masks in pbar:
+
+                start_time = time.time()
+
                 visualize_rectangle(
                     context_masks[0].tolist(), 
                     predict_masks[0].tolist(),
+                    p=MODEL_CONFIG.SIZE // MODEL_CONFIG.PATCH_SIZE
                 )
                 # print(images)
                 # print(captions)
                 # Zero the gradients
                 LLoss = 0
-                CLoss = 0
                 PLoss = 0
 
                 n_mini_iter = len(images) // mini_batch_size
 
                 optimizer.zero_grad()
-                _new_lr = scheduler.step()
-                _new_wd = wd_scheduler.step()
+                # _new_lr = scheduler.step()
+                # _new_wd = wd_scheduler.step()
 
                 # Loop through mini-batches
                 for i in range(0, len(images), mini_batch_size):
@@ -316,10 +305,10 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
                     mini_captions = captions[i:i+mini_batch_size]
                     mini_context_masks = context_masks[i:i+mini_batch_size]
                     mini_predict_masks = predict_masks[i:i+mini_batch_size]
-                    print(f"{mini_images.shape=}")
+                    # print(f"{mini_images.shape=}")
                     # print(f"{mini_images=}")
-                    print(f"{len(mini_captions)=}")
-                    print(f"{mini_captions=}")
+                    # print(f"{len(mini_captions)=}")
+                    # print(f"{mini_captions=}")
                     # print(f"{mini_context_masks.shape=}")
                     # print(f"{mini_context_masks=}")
                     # print(f"{mini_predict_masks.shape=}")
@@ -327,8 +316,7 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
 
                     with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=True):
                     
-                        # start_time = time.time()
-                        # print(f"Encoding {len(mini_images)} images and {len(mini_captions)} captions...")
+                        print(f"Encoding {len(mini_images)} images and {len(mini_captions)} captions...")
                         with torch.no_grad():
                             encoded_text, text_attn_mask = text_encoder(mini_captions)  # Encode the text
                             # print(f"{encoded_text.shape=}")
@@ -338,7 +326,6 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
                             encoded_image_full = vision_encoder(mini_images)  # Encode the context patches
                             # print(f"{encoded_image_full.shape=}")
                             # print(f"{encoded_image_full=}")
-                            # print(f"\tDone in {time.time() - start_time} seconds")
 
                             # start_time = time.time()
                             # print(f"Moving images to {DEVICE_1}...")
@@ -361,16 +348,16 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
                         # start_time = time.time()
                         # print(f"Cross encoding context...")
                         cross_encoded_context = context_crosser(encoded_text, encoded_image_masked, text_attn_mask)  # Cross encode the text and context
-                        print(f"{cross_encoded_context.shape=}")
-                        print(f"{cross_encoded_context=}")
+                        # print(f"{cross_encoded_context.shape=}")
+                        # print(f"{cross_encoded_context=}")
                         # print(f"{cross_encoded.shape=}")
                         # print(f"\tDone in {time.time() - start_time} seconds")
 
                         # start_time = time.time()
                         # print(f"Predicting...")
                         predicted = predictor(cross_encoded_context, mini_context_masks, mini_predict_masks)  # Generate predictions based on context
-                        print(f"{predicted.shape=}")
-                        print(f"{predicted=}")
+                        # print(f"{predicted.shape=}")
+                        # print(f"{predicted=}")
                         # print(f"{predicted.shape=}")
                         # print(f"\tDone in {time.time() - start_time} seconds")
 
@@ -389,8 +376,8 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
                         # start_time = time.time()
                         # print(f"Cross encoding target...")
                         cross_encoded_target = target_crosser(encoded_text, encoded_image_full, text_attn_mask)  # Cross encode the text and context
-                        print(f"{cross_encoded_target.shape=}")
-                        print(f"{cross_encoded_target=}")
+                        # print(f"{cross_encoded_target.shape=}")
+                        # print(f"{cross_encoded_target=}")
                         # print(f"\tDone in {time.time() - start_time} seconds")
                         
                         # start_time = time.time()
@@ -410,7 +397,7 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
                         
                         # print(mini_predict_masks)
                         target = apply_masks(target, mini_predict_masks)  # Apply predict mask
-                        print(f"{target.shape=}")
+                        # print(f"{target.shape=}")
                         # print_tensor_with_precision(target[0][0][:10])
                         # print_tensor_with_precision(target[0][1][:10])
                         # print_tensor_with_precision(target[0][2][:10])
@@ -435,27 +422,7 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
                         # Calculate loss (L1 loss here)
                         p_loss = F.smooth_l1_loss(predicted, target)
 
-                        representation_predicted = predicted.mean(dim=1).to(DEVICE_1)
-                        projected_representation_predicted = projection_head(representation_predicted)
-                        print(f"{representation_predicted.shape=}")
-                        print(f"{representation_predicted=}")
-                        print(f"{projected_representation_predicted.shape=}")
-                        print(f"{projected_representation_predicted=}")
-
-                        representation_target = target.mean(dim=1).to(DEVICE_1)
-                        projected_representation_target = projection_head(representation_target)
-                        print(f"{representation_target.shape=}")
-                        print(f"{representation_target=}")
-                        print(f"{projected_representation_target.shape=}")
-                        print(f"{projected_representation_target=}")
-
-                        # print_tensor_with_precision(representation_predicted[0][:10])
-                        # print_tensor_with_precision(representation_predicted[1][:10])
-                        # print_tensor_with_precision(representation_target[0][:10])
-                        # print_tensor_with_precision(representation_target[1][:10])5
-                        c_loss = max_margin_loss(projected_representation_predicted, projected_representation_target).to(DEVICE_0)
-                        # print(f"{c_loss.tolist()=}")
-                        loss = c_loss #+ p_loss
+                        loss = p_loss
 
                         print_tensor_with_precision(target[0][0][:10])
                         print_tensor_with_precision(predicted[0][0][:10])
@@ -478,11 +445,9 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
                             {
                                 'loss': loss.tolist(),
                                 'p_loss': p_loss.tolist(),
-                                'c_loss': c_loss.tolist(),
                             }
                         )
                         LLoss += loss.item()
-                        CLoss += c_loss.item()
                         PLoss += p_loss.item()
                         
                         # start_time = time.time()
@@ -507,24 +472,22 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
                 # print(f"\tDone in {time.time() - start_time} seconds")
 
                 LLoss = LLoss / n_mini_iter
-                CLoss = CLoss / n_mini_iter
                 PLoss = PLoss / n_mini_iter
                 saver.update_metric(
                     {
                         'loss': LLoss,
                         'p_loss': PLoss,
-                        'c_loss': CLoss,
                     }
                 )
 
                 saver.save_epoch(temp=True)
+                print(f"Finished 1 iter in {time.time() - start_time} seconds")
                         
                 # Update tqdm description with current loss values
                 pbar.set_postfix({
                     'MEM': torch.cuda.max_memory_allocated(DEVICE_0) / 1024.**3 + torch.cuda.max_memory_allocated(DEVICE_1) / 1024.**3,
                     'loss': LLoss,
                     'P': PLoss,
-                    'C': CLoss,
                 })
         
         saver.save_epoch()
@@ -534,13 +497,11 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
                 'context_crosser': context_crosser.state_dict(),
                 'predictor': predictor.state_dict(),
                 'target_crosser': target_crosser.state_dict(),
-                'projection_head': projection_head.state_dict(),
                 'opt': optimizer.state_dict(),
                 'scaler': None if scaler is None else scaler.state_dict(),
                 'epoch': epoch + 1,
                 'loss': LLoss,
                 'p_loss': PLoss,
-                'c_loss': CLoss,
             }
             target_crosser_only = {
                 'target_crosser': target_crosser.state_dict(),
@@ -553,11 +514,11 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
 def main():
     train(
         num_epochs=300, 
-        max_images_per_epoch=40, # 50000 
-        mini_batch_size=40, # 80
-        batch_size=40, # 80*6
-        learning_rate=0.003,
-        save_interval=40,
+        max_images_per_epoch=10000, # 50000 
+        mini_batch_size=60, # 80
+        batch_size=60*10, # 80*6
+        learning_rate=0.001,
+        save_interval=1,
         resume_from=None,
     )
 

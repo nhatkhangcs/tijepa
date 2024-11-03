@@ -6,4 +6,8 @@ __pycache__
 *.pth
 *.pyc
 *.tar
+*.ipynb_checkpoints
 
+trains/
+src/datasets/
+tijepa/

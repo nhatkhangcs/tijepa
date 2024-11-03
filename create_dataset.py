@@ -204,6 +204,135 @@ class ImageTextDataset(Dataset):
                 context_masks,
                 predict_masks,
             )
+
+from torch.utils.data import Dataset
+import os
+import json
+import random
+import torch
+import torchvision.transforms.functional as F
+import time
+from PIL import Image
+import multiprocessing
+
+class ImageTextDatasetA100(Dataset):
+    def __init__(
+        self, 
+        image_path, 
+        caption_path,
+        batch_size,
+        img_size,
+        patch_size,
+        device='cuda:0',
+        shuffle=False,
+        block_scale=(0.05, 0.1),
+        block_aspect_ratio=(0.75, 1.5),
+        max=None,
+        transform=None, 
+        tensor_folder=None,
+    ):
+        self.batch_size = batch_size
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.device = device
+        self.max=max
+
+        # Ensure img_size is divisible by patch_size
+        assert img_size % patch_size == 0, f"img_size {img_size} is not divisible by patch_size {patch_size}"
+        
+        self.n_patches = (img_size // patch_size) ** 2
+        self.all_patches = set(range(self.n_patches))
+
+        # Preload caption data
+        with open(caption_path, 'r') as f:
+            self.caption_dict = json.load(f)
+
+        # Store image filenames and shuffle if required
+        self.image_filenames = [f for f in os.listdir(image_path) if f.endswith(('.png', '.jpg', '.jpeg'))]
+        if max:
+            self.image_filenames = self.image_filenames[:max]
+        if shuffle:
+            random.shuffle(self.image_filenames)
+        
+        self.transform = transform
+        self.tensor_folder = tensor_folder
+        self.image_path = image_path
+
+        self.multiblock = MultiBlock(
+            grid_size= img_size // patch_size,
+            block_scale=block_scale,
+            block_aspect_ratio=block_aspect_ratio,
+            device_context_masks = device,
+            device_predict_masks = device
+        )
+
+        # Tensorize the data
+        self.preload_images()
+
+    def process_and_save_image(self, image_file):
+        image_path = os.path.join(self.image_path, image_file)
+        save_path = os.path.join(self.tensor_folder, os.path.splitext(image_file)[0] + '.pt')
+        
+        if os.path.exists(save_path):
+            return
+        
+        # Open and process the image
+        image = Image.open(image_path).convert("RGB")
+        tensor = self.transform(image).unsqueeze(0)  # Apply transformations and add batch dimension
+        tensor = F.resize(tensor, (self.img_size, self.img_size))  # Resize
+        torch.save(tensor.squeeze(0), save_path)
+
+    def preload_images(self):
+        """ Preload images as tensors and save them to disk as .pt files (if not already done). """
+        if self.tensor_folder is not None and os.path.exists(self.tensor_folder):
+            return
+
+        self.tensor_folder = f"src/datasets/train-tensor-448-10k"
+        os.makedirs(self.tensor_folder, exist_ok=True)
+
+        for i, image_file in enumerate(self.image_filenames):
+            self.process_and_save_image(image_file)
+            print(f"Processing {image_file} ({i+1}/{len(self.image_filenames)})", end='\r')
+                            
+        print(
+            f"{len(os.listdir(self.tensor_folder))}/{len(self.image_filenames)}"
+            " images processed and saved as tensors."
+        )
+
+    def get_image(self, idx):
+        """ Load tensorized image from disk. """
+        tensor_path = os.path.join(self.tensor_folder, os.path.splitext(self.image_filenames[idx])[0] + '.pt')
+        return torch.load(tensor_path, map_location=self.device)
+
+    def get_text(self, idx):
+        """ Get a random caption for a given image. """
+        filename = self.image_filenames[idx]
+        return random.choice(self.caption_dict[filename])
+
+    def __len__(self):
+        """ Number of batches in the dataset. """
+        return (len(self.image_filenames) + self.batch_size - 1) // self.batch_size
+
+    def __iter__(self):
+        """ Iterator to yield batches of images and captions. """
+        if self.max is None:
+            print("Before shuffle: ", self.image_filenames[:3])
+            random.shuffle(self.image_filenames)
+            print("After shuffle: ", self.image_filenames[:3])
+            
+        self.current_idx = 0
+        while self.current_idx < len(self.image_filenames):
+            batch_indices = range(self.current_idx, min(self.current_idx + self.batch_size, len(self.image_filenames)))
+            images = [self.get_image(i) for i in batch_indices]
+            captions = [self.get_text(i) for i in batch_indices]
+
+            # Generate masks for the current batch
+            current_batch_size = len(captions)
+            context_masks, predict_masks = self.multiblock(current_batch_size)
+
+            self.current_idx += self.batch_size
+
+            yield torch.stack(images), captions, context_masks, predict_masks
             
 # collator = MaskCollator()
 # dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, collate_fn=collator, num_workers=0)
@@ -212,34 +341,53 @@ class ImageTextDataset(Dataset):
 
 if __name__ == "__main__":
 
-    SIZE = 224
+    SIZE = 448
     PATCH_SIZE = 16
     HIDDEN_RATIO = (0.4, 0.5)
 
-    BATCH_SIZE = 21
+    BATCH_SIZE = 500
 
     #usage
-    dataset = ImageTextDataset(
+    # dataset = ImageTextDataset(
+    #     image_path='src/datasets/train', 
+    #     caption_path='src/datasets/annotations/filename_caption_dict.json', 
+    #     batch_size=BATCH_SIZE,
+    #     img_size=SIZE,
+    #     patch_size=PATCH_SIZE,
+    #     _hidden_ratio=HIDDEN_RATIO,
+    #     max=100,
+    #     transform=transforms.Compose(
+    #         [
+    #             transforms.Resize((SIZE, SIZE)), 
+    #             transforms.ToTensor()
+    #         ]
+    #     )
+    # )
+    dataset = ImageTextDatasetA100(
         image_path='src/datasets/train', 
-        caption_path='src/datasets/annotations/filename_caption_dict.json', 
+        caption_path='src/datasets/annotations/filename_caption_dict.json',
         batch_size=BATCH_SIZE,
         img_size=SIZE,
-        patch_size=PATCH_SIZE,
-        _hidden_ratio=HIDDEN_RATIO,
-        max=100,
+        patch_size=16,
+        device='cuda:0',
+        shuffle=False,
+        block_scale=(0.05, 0.1),
+        block_aspect_ratio=(0.75, 1.5),
+        max=10000,
         transform=transforms.Compose(
             [
-                transforms.Resize((SIZE, SIZE)), 
                 transforms.ToTensor()
             ]
-        )
+        ), 
+        tensor_folder=None,
     )
     
-    for images, captions, context_masks, predict_masks in tqdm(dataset, desc="Loading Dataset"):
-        print(f"{images.shape=}")
-        print(f"{images[0][0][0]=}")
-        print(f"{len(captions)=}")
-        print(f"{captions[0]=}")
-        print(f"{context_masks.shape=}")
-        print(f"{predict_masks.shape=}")
-        print()
+    # for images, captions, context_masks, predict_masks in tqdm(dataset, desc="Loading Dataset"):
+    #     print(f"{images.shape=}")
+    #     print(f"{images=}")
+        # print(f"{images[0][0][0]=}")
+        # print(f"{len(captions)=}")
+        # print(f"{captions[0]=}")
+        # print(f"{context_masks.shape=}")
+        # print(f"{predict_masks.shape=}")
+        # print()
