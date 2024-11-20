@@ -159,3 +159,60 @@ def init_opt(
     )
     scaler = torch.cuda.amp.GradScaler() if use_bfloat16 else None
     return optimizer, scaler, scheduler, wd_scheduler
+
+
+def init_opt_fine_tune(
+    encoder,
+    mlp_head,
+    iterations_per_epoch,
+    start_lr,
+    ref_lr,
+    warmup,
+    num_epochs,
+    wd=1e-6,
+    final_wd=1e-6,
+    final_lr=0.0,
+    use_bfloat16=False,
+    ipe_scale=1.25
+):
+    param_groups = [
+        {
+            'params': (p for n, p in encoder.named_parameters()
+                       if ('bias' not in n) and (len(p.shape) != 1))
+        }, 
+        {
+            'params': (p for n, p in mlp_head.named_parameters()
+                       if ('bias' not in n) and (len(p.shape) != 1))
+        }, 
+        {
+            'params': (p for n, p in encoder.named_parameters()
+                       if ('bias' in n) or (len(p.shape) == 1)),
+            'WD_exclude': True,
+            'weight_decay': 0
+        }, 
+        {
+            'params': (p for n, p in mlp_head.named_parameters()
+                       if ('bias' in n) or (len(p.shape) == 1)),
+            'WD_exclude': True,
+            'weight_decay': 0
+        },
+    ]
+
+    logger.info('Using AdamW')
+    optimizer = torch.optim.AdamW(param_groups)
+    scheduler = WarmupCosineSchedule(
+        optimizer,
+        warmup_steps=int(warmup * iterations_per_epoch),
+        start_lr=start_lr,
+        ref_lr=ref_lr,
+        final_lr=final_lr,
+        T_max=int(ipe_scale * num_epochs * iterations_per_epoch)
+    )
+    wd_scheduler = CosineWDSchedule(
+        optimizer,
+        ref_wd=wd,
+        final_wd=final_wd,
+        T_max=int(ipe_scale * num_epochs * iterations_per_epoch)
+    )
+    scaler = torch.cuda.amp.GradScaler() if use_bfloat16 else None
+    return optimizer, scaler, scheduler, wd_scheduler

@@ -7,4 +7,4 @@ def print_last_n_lines(filename, n=100):
         print(line, end='')
 
 # Call the function with your file path
-print_last_n_lines('trains/SMALL-A100-448-10k-OBS-SCHEDULER/log.txt')
+print_last_n_lines('trains/SMALL-A100-448-600-10k-OBS-SCHEDULER/log.txt')

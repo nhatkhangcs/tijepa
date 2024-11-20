@@ -584,5 +584,12 @@ def train_simple_linear_module(
 
         saver.save_epoch()
 
+        save_dict = {
+            'linear_module': linear_module.state_dict(),
+            'epoch': epoch + 1,
+            'loss': loss
+        }
+        saver.save_checkpoint(save_dict, epoch=epoch+1)
+
 
     

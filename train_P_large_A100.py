@@ -256,7 +256,7 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
         folder_name = 'SMALL-A100-448-600-10k-OBS-SCHEDULER',
         current_epoch = start_epoch,
         previous_metrics = previous_metrics,
-        **asdict(MODEL_CONFIG)
+        **asdict(MODEL_CONFIG) 
     )
 
     last_time = time.time()

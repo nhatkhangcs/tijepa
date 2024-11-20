@@ -999,9 +999,13 @@ class TextEncoder(nn.Module):
         self.model = AutoModel.from_pretrained(model_path, trust_remote_code=True).to(self.device)
         self.max_length = max_length
 
-    def forward(self, input_texts, normalize=True):
+    def forward(self, input_texts, normalize=True, verbose=False):
         # Tokenize input texts
         batch_dict = self.tokenizer(input_texts, max_length=self.max_length, padding=True, truncation=True, return_tensors='pt').to(self.device)
+
+        if verbose:
+            print(batch_dict)
+            
         attention_mask = batch_dict['attention_mask']
         
         # Pass through model

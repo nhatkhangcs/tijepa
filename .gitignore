@@ -6,8 +6,15 @@ __pycache__
 *.pth
 *.pyc
 *.tar
+*.zip
 *.ipynb_checkpoints
 
 trains/
 src/datasets/
 tijepa/
+
+vqa_dataset/*.json
+vqa_dataset/test
+vqa_dataset/val
+vqa_dataset/train
+  
