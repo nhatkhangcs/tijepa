@@ -68,6 +68,9 @@ class Saver:
         
     def save_epoch(self, temp=False):
         for metric, records in self.metrics.items():
+            if not records or not isinstance(records[0], (int, float)):
+                continue
+                
             batches = list(range(1, len(records) + 1))
 
             # Plotting the loss function

@@ -28,6 +28,7 @@ class VQADataset(Dataset):
         shuffle=False,
         max=None,
         max_val=5000,
+        val_batch_size=100,
         transform=transforms.Compose(
             [
                 transforms.ToTensor()
@@ -38,6 +39,7 @@ class VQADataset(Dataset):
         self.batch_size = batch_size
         self.img_size = img_size
         self.device = "cuda:0"
+        self.val_batch_size = val_batch_size
         
         self.tensor_folder = f"vqa_dataset/vqa_tensor_{img_size}" 
         
@@ -140,12 +142,12 @@ class VQADataset(Dataset):
             
         self.current_idx = 0
         while self.current_idx < self.max_val:
-            batch_indices = range(self.current_idx, min(self.current_idx + self.batch_size, self.max_val))
+            batch_indices = range(self.current_idx, min(self.current_idx + self.val_batch_size, self.max_val))
             images = [self.get_V(i, 'val') for i in batch_indices]
             questions = [self.get_Q(i, 'val') for i in batch_indices]
             answers = [self.get_A(i, 'val') for i in batch_indices]
 
-            self.current_idx += self.batch_size
+            self.current_idx += self.val_batch_size
 
             yield torch.stack(images), questions, [self.mapper[ans] for ans in answers]
 

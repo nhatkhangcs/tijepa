@@ -14,6 +14,7 @@ from load_tijepa_448 import load_448, inference_448
 
 from tqdm import tqdm
 
+from metrics import calculate_metrics_from_logits
 
 class MVSA:
     MVSA_SINGLE_PATH = "src/datasets/mvsa/mvsa_single"
@@ -126,6 +127,46 @@ class MVSA:
 
     def __len__(self): # length of the dataset
         return len(self.dataset) // self.batch_size + 1
+
+    def upsampling(self):
+        """
+        Upsample the dataset to balance the number of samples across classes.
+        Assumes `self.train_set` is a list of tuples (image_path, class).
+    
+        Returns:
+            None: Updates `self.train_set` in-place with upsampled data.
+        """
+        from collections import Counter
+    
+        # Count the number of samples for each class
+        class_counts = Counter([cls for _, cls in self.train_set])
+        max_count = max(class_counts.values())  # Find the maximum class count
+    
+        # Group samples by class
+        class_to_samples = {cls: [] for cls in class_counts}
+        for image_path, cls in self.train_set:
+            class_to_samples[cls].append((image_path, cls))
+    
+        # Upsample each class to have the same number of samples as the majority class
+        upsampled_train_set = []
+        for cls, samples in class_to_samples.items():
+            num_samples = len(samples)
+            if num_samples < max_count:
+                # Randomly duplicate samples to reach the maximum count
+                additional_samples = random.choices(samples, k=max_count - num_samples)
+                upsampled_train_set.extend(samples + additional_samples)
+            else:
+                upsampled_train_set.extend(samples)
+    
+        # Shuffle the upsampled dataset for randomness
+        random.shuffle(upsampled_train_set)
+    
+        # Update the train_set with the upsampled dataset
+        self.train_set = upsampled_train_set
+
+        # Count again
+        class_counts = Counter([cls for _, cls in self.train_set])
+        print("After upsampling: ", class_counts)
     
     def __iter__(self): # iter on the dataset
         self.current_idx = 0
@@ -196,11 +237,11 @@ class MVSA:
                     image_path, cls = data[idx]
 
                     if cls == 'positive':
-                        cls = [1, 0, 0]
+                        cls = 0
                     elif cls == 'neutral':
-                        cls = [0, 1, 0]
+                        cls = 1
                     elif cls == 'negative':
-                        cls = [0, 0, 1]
+                        cls = 2
 
                 except Exception as e: 
                     continue
@@ -259,10 +300,10 @@ def encode_dataset(
         tensor_folder=tensor_folder
     )
 
-    # Encode the dataset
-    with tqdm(ds, desc=f"Embedding pairs.") as pbar:
-        for images, captions, images_paths in pbar:
-            with torch.no_grad():
+    with torch.no_grad():
+        # Encode the dataset
+        with tqdm(ds, desc=f"Embedding pairs.") as pbar:
+            for images, captions, images_paths in pbar:
                 embeddings = inference_448(
                     images, captions, text_encoder, vision_encoder, crosser
                 )
@@ -286,21 +327,57 @@ def train_simple_linear_module(
         seed=69
     ):
 
+    """
+    {
+        "accuracy": accuracy,
+        "macro_precision": macro_precision,
+        "macro_recall": macro_recall,
+        "macro_f1": macro_f1,
+        "weighted_precision": weighted_precision,
+        "weighted_recall": weighted_recall,
+        "weighted_f1": weighted_f1,
+        "per_class_precision": precision.tolist(),
+        "per_class_recall": recall.tolist(),
+        "per_class_f1": f1_score.tolist(),
+    }
+    """
+
     saver = Saver(
         metrics=[
-            'loss', 
-            'train-accuracy', 
-            'train-precision',
-            'train-recall',
-            'train-f1',
-            'val-accuracy',
-            'val-precision',
-            'val-recall',
-            'val-f1',
-            'test-accuracy',
-            'test-precision',
-            'test-recall',
-            'test-f1',
+            'loss',
+            
+            "tr-accuracy",
+            "tr-macro_precision",
+            "tr-macro_recall",
+            "tr-macro_f1",
+            "tr-weighted_precision",
+            "tr-weighted_recall",
+            "tr-weighted_f1",
+            "tr-per_class_precision",
+            "tr-per_class_recall",
+            "tr-per_class_f1",
+
+            "v-accuracy",
+            "v-macro_precision",
+            "v-macro_recall",
+            "v-macro_f1",
+            "v-weighted_precision",
+            "v-weighted_recall",
+            "v-weighted_f1",
+            "v-per_class_precision",
+            "v-per_class_recall",
+            "v-per_class_f1",
+
+            "t-accuracy",
+            "t-macro_precision",
+            "t-macro_recall",
+            "t-macro_f1",
+            "t-weighted_precision",
+            "t-weighted_recall",
+            "t-weighted_f1",
+            "t-per_class_precision",
+            "t-per_class_recall",
+            "t-per_class_f1",
         ],
         folder_name='MVSA',
         **{
@@ -315,13 +392,15 @@ def train_simple_linear_module(
         device = device,
         tensor_folder=f"src/datasets/mvsa-tensor"
     )
-    # ds.upsampling()
+
     ds.shuffle(seed=seed)
     ds.split()
 
     print(f"{len(ds.train_set)=}")
     print(f"{len(ds.val_set)=}")
     print(f"{len(ds.test_set)=}")
+
+    ds.upsampling()
 
     # Create a simple linear module
     linear_module = simple_linear_sentiment_module(hidden_size, 3).to(device)
@@ -337,7 +416,7 @@ def train_simple_linear_module(
     #     lr=lr, 
     #     momentum=0.9
     # )
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.75)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)
     
     # Train the model
     for epoch in range(epochs):
@@ -345,11 +424,8 @@ def train_simple_linear_module(
         linear_module.train()
 
         total_loss = 0
-        total_samples = 0
-        total_true_negative = 0
-        total_true_positive = 0
-        total_false_negative = 0
-        total_false_positive = 0
+        ALL_PREDICTED_LOGITS = torch.empty(0, 3).to(device)
+        ALL_GROUND_TRUTH = torch.empty(0, dtype=torch.long).to(device)
 
         with tqdm(ds.iter_path('train'), desc=f"Epoch {epoch+1}/{epochs}") as pbar:
             for class_labels, images_paths in pbar:
@@ -377,11 +453,15 @@ def train_simple_linear_module(
                 predictions = linear_module(embeddings)
                 saver.log(f"{predictions[:5]=}")
                 saver.log(f"{predictions.argmax(dim=1)[:5]}")
-
+                
+                class_labels = torch.tensor(class_labels, dtype=torch.long).to(device)
 
                 # Calculate loss
-                loss = criterion(predictions, class_labels.argmax(dim=1))
+                loss = criterion(predictions, class_labels)
 
+                ALL_PREDICTED_LOGITS = torch.cat((ALL_PREDICTED_LOGITS, predictions), dim=0)
+                ALL_GROUND_TRUTH = torch.cat((ALL_GROUND_TRUTH, class_labels), dim=0)
+            
                 # Backpropagate
                 loss.backward()
                 optimizer.step()
@@ -392,195 +472,160 @@ def train_simple_linear_module(
                 # Calculate accuracy
                 total_loss += loss.item()
                 
-
-                pred_classes = predictions.argmax(dim=1)      # Get predicted class indices
-                true_classes = class_labels.argmax(dim=1)     # Get true class indices (assuming one-hot encoded)
-
-                # False Positives: Predicted class is 0, but true class is not 0
-                total_false_positive += ((pred_classes == 0) & (true_classes != 0)).sum().item()
-                saver.log("total_false_positive", total_false_positive)
-                # False Negatives: Predicted class is not 0, but true class is 0
-                total_false_negative += ((pred_classes != 0) & (true_classes == 0)).sum().item()
-                saver.log("total_false_negative", total_false_negative)
-                # True Positives: Predicted class is 0 and true class is also 0
-                total_true_positive += ((pred_classes == 0) & (true_classes == 0)).sum().item()
-                saver.log("total_true_positive", total_true_positive)
-                # True Negatives: Predicted class is not 0 and true class is also not 0
-                total_true_negative += ((pred_classes != 0) & (true_classes != 0)).sum().item()
-                saver.log("total_true_negative", total_true_negative)
-                
-                total_samples += len(class_labels)
-                saver.log("total_samples", total_samples)
+                metrics = calculate_metrics_from_logits(ALL_PREDICTED_LOGITS, ALL_GROUND_TRUTH)
                 
                 saver.update_metric(
                     {
-                        'loss': total_loss / total_samples,
-                        'train-accuracy': (total_true_positive + total_true_negative) / total_samples,
-                        'train-precision': total_true_positive / (total_true_positive + total_false_positive),
-                        'train-recall': total_true_positive / (total_true_positive + total_false_negative),
-                        'train-f1': 2 * total_true_positive / (2 * total_true_positive + total_false_positive + total_false_negative),
+                        'loss': loss.item(),
+                        'tr-accuracy': metrics['accuracy'],
+                        'tr-weighted_precision': metrics['weighted_precision'],
+                        'tr-weighted_recall': metrics['weighted_recall'],
+                        'tr-weighted_f1': metrics['weighted_f1'],
+                        "tr-per_class_precision": metrics['per_class_precision'],
+                        "tr-per_class_recall": metrics['per_class_recall'],
+                        "tr-per_class_f1": metrics['per_class_f1'],
                     }
                 )
                 saver.save_epoch(temp=True)
 
                 pbar.set_postfix(
-                    loss=total_loss / total_samples,
-                    accuracy=(total_true_positive + total_true_negative) / total_samples,
-                    precision=total_true_positive / (total_true_positive + total_false_positive),
-                    recall=total_true_positive / (total_true_positive + total_false_negative),
-                    f1=2 * total_true_positive / (2 * total_true_positive + total_false_positive + total_false_negative),
-                    lr=current_lr
+                    loss=loss.item(),
+                    tr_accuracy=metrics['accuracy'],
+                    tr_weighted_precision=metrics['weighted_precision'],
+                    tr_weighted_recall=metrics['weighted_recall'],
+                    tr_weighted_f1=metrics['weighted_f1'],
+                    lr=current_lr,
                 )
-
 
         scheduler.step()
+
+        with torch.no_grad():
+            # Validate the model
+            linear_module.eval()
+    
+            total_loss = 0
+            ALL_PREDICTED_LOGITS = torch.empty(0, 3).to(device)
+            ALL_GROUND_TRUTH = torch.empty(0, dtype=torch.long).to(device)
+    
+            with tqdm(ds.iter_path('val'), desc=f"Validation") as pbar:
+                for class_labels, images_paths in pbar:
+    
+                     # Check if the images are in the save_path
+                    for idx, image_path in enumerate(images_paths):
+                        if not os.path.exists(os.path.join(save_path, image_path.replace('jpg', 'pt'))):
+                            print(f"{image_path} not found")
+    
+                            images_paths.pop(idx)
+                            class_labels = torch.cat([
+                                class_labels[:idx],
+                                class_labels[idx+1:]
+                            ], dim=0)
+    
+                    # Embed
+                    embeddings = torch.stack([
+                        torch.load(os.path.join(save_path, image_path.split('/')[-1].replace('jpg', 'pt')))
+                        for image_path in images_paths
+                    ]).to(device)
+    
+                    # Predict
+                    predictions = linear_module(embeddings)
+                    # print(f"{predictions[:5]=}")
+                    # print(f"{predictions.argmax(dim=1)[:5]}")
+    
+                    class_labels = torch.tensor(class_labels, dtype=torch.long).to(device)
+    
+                    # Calculate loss
+                    loss = criterion(predictions, class_labels)
+    
+                    ALL_PREDICTED_LOGITS = torch.cat((ALL_PREDICTED_LOGITS, predictions), dim=0)
+                    ALL_GROUND_TRUTH = torch.cat((ALL_GROUND_TRUTH, class_labels), dim=0)
+    
+                    # Calculate accuracy
+                    total_loss += loss.item()
+    
+                    metrics = calculate_metrics_from_logits(ALL_PREDICTED_LOGITS, ALL_GROUND_TRUTH)
+                    
+                    saver.update_metric(
+                        {
+                            'v-accuracy': metrics['accuracy'],
+                            'v-weighted_precision': metrics['weighted_precision'],
+                            'v-weighted_recall': metrics['weighted_recall'],
+                            'v-weighted_f1': metrics['weighted_f1'],
+                            "v-per_class_precision": metrics['per_class_precision'],
+                            "v-per_class_recall": metrics['per_class_recall'],
+                            "v-per_class_f1": metrics['per_class_f1'],
+                        }
+                    )
+                    saver.save_epoch(temp=True)
+    
+                    pbar.set_postfix(
+                        v_accuracy=metrics['accuracy'],
+                        v_weighted_precision=metrics['weighted_precision'],
+                        v_weighted_recall=metrics['weighted_recall'],
+                        v_weighted_f1=metrics['weighted_f1'],
+                    )
+                    
+            # Test the model
+            linear_module.eval()
         
-        # Validate the model
-        linear_module.eval()
-
-        total_loss = 0
-        total_samples = 0
-        total_true_negative = 0
-        total_true_positive = 0
-        total_false_negative = 0
-        total_false_positive = 0
-
-        with tqdm(ds.iter_path('val'), desc=f"Validation") as pbar:
-            for class_labels, images_paths in pbar:
-
-                 # Check if the images are in the save_path
-                for idx, image_path in enumerate(images_paths):
-                    if not os.path.exists(os.path.join(save_path, image_path.replace('jpg', 'pt'))):
-                        print(f"{image_path} not found")
-
-                        images_paths.pop(idx)
-                        class_labels = torch.cat([
-                            class_labels[:idx],
-                            class_labels[idx+1:]
-                        ], dim=0)
-
-                # Embed
-                embeddings = torch.stack([
-                    torch.load(os.path.join(save_path, image_path.split('/')[-1].replace('jpg', 'pt')))
-                    for image_path in images_paths
-                ]).to(device)
-
-                # Predict
-                predictions = linear_module(embeddings)
-                # print(f"{predictions[:5]=}")
-                # print(f"{predictions.argmax(dim=1)[:5]}")
-
-                # Calculate loss
-                loss = criterion(predictions, class_labels.argmax(dim=1))
-
-                # Calculate accuracy
-                total_loss += loss.item()
-
-                pred_classes = predictions.argmax(dim=1)      # Get predicted class indices
-                true_classes = class_labels.argmax(dim=1)     # Get true class indices (assuming one-hot encoded)
-
-                # False Positives: Predicted class is 0, but true class is not 0
-                total_false_positive += ((pred_classes == 0) & (true_classes != 0)).sum().item()
-
-                # False Negatives: Predicted class is not 0, but true class is 0
-                total_false_negative += ((pred_classes != 0) & (true_classes == 0)).sum().item()
-
-                # True Positives: Predicted class is 0 and true class is also 0
-                total_true_positive += ((pred_classes == 0) & (true_classes == 0)).sum().item()
-
-                # True Negatives: Predicted class is not 0 and true class is also not
-                total_true_negative += ((pred_classes != 0) & (true_classes != 0)).sum().item()
-                
-                total_samples += len(class_labels)
-
-                saver.update_metric(
-                    {
-                        'val-accuracy': (total_true_positive + total_true_negative) / total_samples,
-                        'val-precision': total_true_positive / (total_true_positive + total_false_positive),
-                        'val-recall': total_true_positive / (total_true_positive + total_false_negative),
-                        'val-f1': 2 * total_true_positive / (2 * total_true_positive + total_false_positive + total_false_negative),
-                    }
-                )
-
-                pbar.set_postfix(
-                    loss=total_loss / total_samples,
-                    accuracy=(total_true_positive + total_true_negative) / total_samples,
-                    precision=total_true_positive / (total_true_positive + total_false_positive),
-                    recall=total_true_positive / (total_true_positive + total_false_negative),
-                    f1=2 * total_true_positive / (2 * total_true_positive + total_false_positive + total_false_negative),
-                )
-                
-        # Test the model
-        linear_module.eval()
+            total_loss = 0
+            ALL_PREDICTED_LOGITS = torch.empty(0, 3).to(device)
+            ALL_GROUND_TRUTH = torch.empty(0, dtype=torch.long).to(device)
+        
+            with tqdm(ds.iter_path('test'), desc=f"Testing") as pbar:
+                for class_labels, images_paths in pbar:
+                    # Check if the images are in the save_path
+                    for idx, image_path in enumerate(images_paths):
+                        if not os.path.exists(os.path.join(save_path, image_path.replace('jpg', 'pt'))):
+                            print(f"{image_path} not found")
+        
+                            images_paths.pop(idx)
+                            class_labels = torch.cat([
+                                class_labels[:idx],
+                                class_labels[idx+1:]
+                            ], dim=0)
+        
+                    # Embed
+                    embeddings = torch.stack([
+                        torch.load(os.path.join(save_path, image_path.split('/')[-1].replace('jpg', 'pt')))
+                        for image_path in images_paths
+                    ]).to(device)
+        
+                    # Predict
+                    predictions = linear_module(embeddings)
+                    
+                    class_labels = torch.tensor(class_labels, dtype=torch.long).to(device)
+        
+                    # Calculate loss
+                    loss = criterion(predictions, class_labels)
     
-        total_loss = 0
-        total_samples = 0
-        total_true_negative = 0
-        total_true_positive = 0
-        total_false_negative = 0
-        total_false_positive = 0
+                    ALL_PREDICTED_LOGITS = torch.cat((ALL_PREDICTED_LOGITS, predictions), dim=0)
+                    ALL_GROUND_TRUTH = torch.cat((ALL_GROUND_TRUTH, class_labels), dim=0)
+        
+                    # Calculate accuracy
+                    total_loss += loss.item()
+        
+                    metrics = calculate_metrics_from_logits(ALL_PREDICTED_LOGITS, ALL_GROUND_TRUTH)
+                    
+                    saver.update_metric(
+                        {
+                            't-accuracy': metrics['accuracy'],
+                            't-weighted_precision': metrics['weighted_precision'],
+                            't-weighted_recall': metrics['weighted_recall'],
+                            't-weighted_f1': metrics['weighted_f1'],
+                            "t-per_class_precision": metrics['per_class_precision'],
+                            "t-per_class_recall": metrics['per_class_recall'],
+                            "t-per_class_f1": metrics['per_class_f1'],
+                        }
+                    )
+                    saver.save_epoch(temp=True)
     
-        with tqdm(ds.iter_path('test'), desc=f"Testing") as pbar:
-            for class_labels, images_paths in pbar:
-                # Check if the images are in the save_path
-                for idx, image_path in enumerate(images_paths):
-                    if not os.path.exists(os.path.join(save_path, image_path.replace('jpg', 'pt'))):
-                        print(f"{image_path} not found")
-    
-                        images_paths.pop(idx)
-                        class_labels = torch.cat([
-                            class_labels[:idx],
-                            class_labels[idx+1:]
-                        ], dim=0)
-    
-                # Embed
-                embeddings = torch.stack([
-                    torch.load(os.path.join(save_path, image_path.split('/')[-1].replace('jpg', 'pt')))
-                    for image_path in images_paths
-                ]).to(device)
-    
-                # Predict
-                predictions = linear_module(embeddings)
-    
-                # Calculate loss
-                loss = criterion(predictions, class_labels.argmax(dim=1))
-    
-                # Calculate accuracy
-                total_loss += loss.item()
-    
-                pred_classes = predictions.argmax(dim=1)      # Get predicted class indices
-                true_classes = class_labels.argmax(dim=1)
-    
-                # False Positives: Predicted class is 0, but true class is not 0
-                total_false_positive += ((pred_classes == 0) & (true_classes != 0)).sum().item()
-    
-                # False Negatives: Predicted class is not 0, but true class is 0
-                total_false_negative += ((pred_classes != 0) & (true_classes == 0)).sum().item()
-    
-                # True Positives: Predicted class is 0 and true class is also 0
-                total_true_positive += ((pred_classes == 0) & (true_classes == 0)).sum().item()
-    
-                # True Negatives: Predicted class is not 0 and true class is also not
-                total_true_negative += ((pred_classes != 0) & (true_classes != 0)).sum().item()
-    
-                total_samples += len(class_labels)
-    
-                saver.update_metric(
-                    {
-                        'test-accuracy': (total_true_positive + total_true_negative) / total_samples,
-                        'test-precision': total_true_positive / (total_true_positive + total_false_positive),
-                        'test-recall': total_true_positive / (total_true_positive + total_false_negative),
-                        'test-f1': 2 * total_true_positive / (2 * total_true_positive + total_false_positive + total_false_negative),
-                    }
-                )
-    
-                pbar.set_postfix(
-                    loss=total_loss / total_samples,
-                    accuracy=(total_true_positive + total_true_negative) / total_samples,
-                    precision=total_true_positive / (total_true_positive + total_false_positive),
-                    recall=total_true_positive / (total_true_positive + total_false_negative),
-                    f1=2 * total_true_positive / (2 * total_true_positive + total_false_positive + total_false_negative),
-                )
+                    pbar.set_postfix(
+                        t_accuracy=metrics['accuracy'],
+                        t_weighted_precision=metrics['weighted_precision'],
+                        t_weighted_recall=metrics['weighted_recall'],
+                        t_weighted_f1=metrics['weighted_f1'],
+                    )
 
         saver.save_epoch()
 

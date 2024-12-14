@@ -14,7 +14,16 @@ src/datasets/
 tijepa/
 
 vqa_dataset/*.json
+vqa_dataset/*.jsonl
+vqa_dataset/*txt
+
 vqa_dataset/test
 vqa_dataset/val
 vqa_dataset/train
-  
+vqa_dataset/vqa
+
+vqa_dataset/test2015
+vqa_dataset/val2014
+vqa_dataset/train2014
+
+

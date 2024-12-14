@@ -26,6 +26,8 @@ from src.utils.visualizer import visualize_rectangle, print_tensor_with_precisio
 from src.utils.saving import Saver
 from eval_on_mvsa import train_simple_linear_module
 
+from metrics import calculate_metrics_from_logits, indices_to_one_hot
+
 DEVICE_0 = 'cuda:0'
 
 ##################
@@ -298,7 +300,7 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
 
                 saver.save_epoch(temp=True)
                 saver.log(f"Finished 1 iter in {time.time() - start_time} seconds")
-                print(f"Finished 1 iter in {time.time() - start_time} seconds")
+                # print(f"Finished 1 iter in {time.time() - start_time} seconds")
 
                 last_time = time.time()
                         
@@ -311,6 +313,49 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
         
         saver.save_epoch()
 
+        # VALID
+        num_classes = 3129
+        total_loss = 0
+        ALL_PREDICTED_LOGITS = torch.empty(0, num_classes).to(DEVICE_0)
+        ALL_GROUND_TRUTH = torch.empty(0, dtype=torch.long).to(DEVICE_0)
+
+        crosser.eval()
+        mlp_head.eval()
+        
+        with torch.no_grad():
+            with tqdm(dataset.iter_val(), desc=f"Validation") as pbar:
+                for images, questions, answers in pbar:
+    
+                    encoded_text, text_attn_mask = text_encoder(questions)
+                    encoded_image_full = vision_encoder(images)  # Encode the context patches
+                    cross_encoded = crosser(encoded_text, encoded_image_full, text_attn_mask)  
+                    pooled_encoded = cross_encoded.mean(dim=1)
+                    
+                    logits = mlp_head(pooled_encoded)
+                    answers = torch.tensor(answers, dtype=torch.long).to(DEVICE_0)
+                    
+                    loss = loss_fn(logits, answers)
+                    total_loss += loss.item()
+                                        
+                    # print(f"{predictions[:5]=}")
+                    # print(f"{predictions.argmax(dim=1)[:5]}")
+
+                    ALL_PREDICTED_LOGITS = torch.cat((ALL_PREDICTED_LOGITS, logits), dim=0)
+                    ALL_GROUND_TRUTH = torch.cat((ALL_GROUND_TRUTH, answers), dim=0)
+                    
+                    pbar.set_postfix(
+                        loss=loss.item(),
+                    )
+
+        metrics = calculate_metrics_from_logits(ALL_PREDICTED_LOGITS, ALL_GROUND_TRUTH)
+        import json
+        print(json.dumps(
+            {
+                k: v for k, v in metrics.items() if k in ['accuracy', 'weighted_precision', 'weighted_recall', 'weighted_f1']
+            },
+            indent=4
+        ))
+
         if (epoch + 1) % save_interval == 0:
             save_dict = {
                 'crosser': crosser.state_dict(),
@@ -318,7 +363,8 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
                 'opt': optimizer.state_dict(),
                 'scaler': None if scaler is None else scaler.state_dict(),
                 'epoch': epoch + 1,
-                'loss': loss
+                'loss': loss,
+                'val_metrics': metrics,
             }
             saver.save_checkpoint(save_dict, epoch=epoch+1)
             saver.log(f"Saved checkpoint: {save_dict['epoch']}, loss = {save_dict['loss']}")
@@ -330,8 +376,8 @@ def main():
         mini_batch_size=100, # 80
         batch_size=50*10, # 80*6
         learning_rate=1e-5,
-        save_interval=5,
-        resume_from=None,
+        save_interval=2,
+        resume_from="trains/VQA-1731977774/epoch-15.pt",
     )
 
 if __name__ == "__main__":
