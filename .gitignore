@@ -1,6 +1,7 @@
 *.swp
 *.swo
 __pycache__
+.DS_Store
 
 *.pt
 *.pth
@@ -12,6 +13,7 @@ __pycache__
 trains/
 src/datasets/
 tijepa/
+*.json
 
 vqa_dataset/*.json
 vqa_dataset/*.jsonl
