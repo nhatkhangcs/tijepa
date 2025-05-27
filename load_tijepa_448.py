@@ -23,8 +23,8 @@ class ModelConfig:
     PATCH_SIZE: int = params['mask']['patch_size']
 
     V_EMBED_DIM: int = 1280
-    T_EMBED_DIM: int = 768
-    H_EMBED_DIM: int = 768
+    T_EMBED_DIM: int = 1024
+    H_EMBED_DIM: int = 1024
     PRED_EMBED_DIM: int = params['meta']['pred_emb_dim']
 
     DROP_RATE: float = 0.15
@@ -62,7 +62,8 @@ def load_448(checkpoint_path, crosser_type: Literal['target'] | Literal['context
     print(f"Init models...")
     # Text Encoder
     text_encoder = text_encoder_model(
-        device=DEVICE_0
+        device=DEVICE_0,
+        model='large'
     )
     text_encoder_total_params = sum(p.numel() for p in text_encoder.parameters())
     print(f"{text_encoder_total_params=}")
@@ -131,7 +132,7 @@ def inference_448(images, captions, text_encoder, vision_encoder, crosser):
     
     # Encode the context patches
     encoded_image_full = vision_encoder(images)
-    
+
     # Cross encode the text and context
     cross_encoded_target = crosser(encoded_text, encoded_image_full, text_attn_mask)
 

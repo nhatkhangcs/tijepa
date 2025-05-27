@@ -40,8 +40,8 @@ class ModelConfig:
     PATCH_SIZE: int = params['mask']['patch_size']
 
     V_EMBED_DIM: int = 1280
-    T_EMBED_DIM: int = 768
-    H_EMBED_DIM: int = 768
+    T_EMBED_DIM: int = 1024
+    H_EMBED_DIM: int = 1024
     PRED_EMBED_DIM: int = params['meta']['pred_emb_dim']
 
     DROP_RATE: float = 0. # 0.15
@@ -59,6 +59,7 @@ MODEL_CONFIG = ModelConfig()
 
 # Text Encoder
 text_encoder = text_encoder_model(
+    model='large',
     device=DEVICE_0
 )
 text_encoder_total_params = sum(p.numel() for p in text_encoder.parameters())
@@ -409,7 +410,38 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
                             # print(f"\tDone in {time.time() - start_time} seconds")
                             
                             # Calculate loss (L1 loss here)
-                        p_loss = F.smooth_l1_loss(predicted, target)
+                        # Invariance loss: Ensure predicted embeddings are close to target embeddings
+                        invariance_loss = F.mse_loss(predicted, target)
+                        # Variance loss: Prevent feature collapse
+                        predicted_std = torch.sqrt(predicted.var(dim=0) + 1e-4)
+                        target_std = torch.sqrt(target.var(dim=0) + 1e-4)
+                        variance_loss = torch.mean(F.relu(1 - predicted_std)) / 2 + torch.mean(F.relu(1 - target_std)) / 2
+                        
+                        # Covariance loss: Decorrelate features
+                        def off_diagonal(x):
+                            n, m = x.shape
+                            assert n == m
+                            return x.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
+                        
+                        # Reshape predicted to [num_samples * num_patches, num_features]
+                        reshaped_predicted = predicted.view(-1, predicted.size(-1))  # Combine batch and sequence dimensions
+                        
+                        # Compute the covariance matrix
+                        predicted_cov = (reshaped_predicted.mT @ reshaped_predicted) / (reshaped_predicted.size(0) - 1)
+                        # Reshape target to [num_samples * num_patches, num_features]
+                        reshaped_target = target.view(-1, target.size(-1))  # Combine batch and sequence dimensions
+                        
+                        # Compute the covariance matrix
+                        target_cov = (reshaped_target.mT @ reshaped_target) / (reshaped_target.size(0) - 1)
+                        covariance_loss = off_diagonal(predicted_cov).pow(2).sum() / predicted.size(1) + \
+                                          off_diagonal(target_cov).pow(2).sum() / target.size(1)
+
+                        # Combine VICReg-inspired losses
+                        sim_coeff = 25.0  # Weight for invariance loss
+                        std_coeff = 25.0  # Weight for variance loss
+                        cov_coeff = 1.0   # Weight for covariance loss
+                        
+                        total_loss = sim_coeff * invariance_loss + std_coeff * variance_loss + cov_coeff * covariance_loss
 
                         saver.log(target[0][0][:10])
                         saver.log(predicted[0][0][:10])
@@ -443,14 +475,14 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
 
                         saver.update_metric(
                             {
-                                'loss': p_loss.tolist(),
+                                'loss': total_loss.tolist(),
                             }
                         )
-                        loss += p_loss.item()
+                        loss += total_loss.item()
                         
                         # start_time = time.time()
                         # Backward pass
-                        scaler.scale(p_loss).backward()
+                        scaler.scale(total_loss).backward()
 
                 # Optimizer step
                 scaler.step(optimizer)
@@ -506,13 +538,13 @@ def train(num_epochs=1, max_images_per_epoch=10, batch_size=10, mini_batch_size=
 
 def main():
     train(
-        num_epochs=600, 
+        num_epochs=300, 
         max_images_per_epoch=10000, # 50000 
         mini_batch_size=26, # 80
         batch_size=26*15, # 80*6
         learning_rate=0.001,
         save_interval=20,
-        resume_from="trains/SMALL-A100-448-10k-OBS-SCHEDULER/epoch-300.pt",
+        resume_from=None,
     )
 
 if __name__ == "__main__":
