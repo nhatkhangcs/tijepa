@@ -1,4 +1,4 @@
-import torch
+# import torch
 import random
 import yaml
 import pprint
@@ -15,18 +15,18 @@ from src.utils.losses import cosine_similarity_matrix, contrastive_loss, clip_lo
 
 from create_dataset import ImageTextDatasetA100
 from src.masks.multiblock import MaskCollator
-import torch.nn.functional as F
-import torch.optim as optim
-from torchvision import transforms
-from torch.utils.data import Dataset, DataLoader
-from tqdm import tqdm
-import torch.nn as nn
+# import torch.nn.functional as F
+# import torch.optim as optim
+# from torchvision import transforms
+# from torch.utils.data import Dataset, DataLoader
+# from tqdm import tqdm
+# import torch.nn as nn
 
 from src.utils.visualizer import visualize_rectangle, print_tensor_with_precision, print_sample_of_tensor
 from src.utils.saving import Saver
 from eval_on_mvsa import train_simple_linear_module
 
-DEVICE_0 = 'cuda:0'
+DEVICE_0 = 'cpu'
 
 ##################
 with open('configs/in1k_vith16-448_ep300.yaml', 'r') as y_file:
@@ -58,6 +58,7 @@ MODEL_CONFIG = ModelConfig()
 ##################
 
 # Text Encoder
+<<<<<<< HEAD
 text_encoder = text_encoder_model(
     model='large',
     device=DEVICE_0
@@ -66,27 +67,36 @@ text_encoder_total_params = sum(p.numel() for p in text_encoder.parameters())
 print(f"{text_encoder_total_params=}")
 for p in text_encoder.parameters():
     p.requires_grad = False
+=======
+# text_encoder = text_encoder_model(
+#     device=DEVICE_0
+# )
+# text_encoder_total_params = sum(p.numel() for p in text_encoder.parameters())
+# print(f"{text_encoder_total_params=}")
+# for p in text_encoder.parameters():
+#     p.requires_grad = False
+>>>>>>> e62e23d9a27d67fae7099b4053224529639b0c84
 
-# Vision Encoder
-vision_encoder = modules.__dict__[params['meta']['model_name']](
-    img_size=[MODEL_CONFIG.SIZE],
-    patch_size=MODEL_CONFIG.PATCH_SIZE,
-).to(DEVICE_0)
-context_vision_encoder_total_params = sum(p.numel() for p in vision_encoder.parameters())
-print(f"{context_vision_encoder_total_params=}")
+# # Vision Encoder
+# vision_encoder = modules.__dict__[params['meta']['model_name']](
+#     img_size=[MODEL_CONFIG.SIZE],
+#     patch_size=MODEL_CONFIG.PATCH_SIZE,
+# ).to(DEVICE_0)
+# context_vision_encoder_total_params = sum(p.numel() for p in vision_encoder.parameters())
+# print(f"{context_vision_encoder_total_params=}")
 
-TAR_FILE = "IN1K-vit.h.16-448px-300e.pth.tar"
-print(f"Loading Vision Encoder {TAR_FILE}...")
-checkpoint = torch.load(TAR_FILE, map_location=torch.device(DEVICE_0))
-encoder_dict = checkpoint['target_encoder'] if 'target_encoder' in checkpoint else checkpoint['encoder']
-encoder_dict = {k.replace('module.', ''): v for k, v in encoder_dict.items()}
-msg = vision_encoder.load_state_dict(encoder_dict)
-print(f'loaded pretrained encoder from with msg: {msg}')
-for p in vision_encoder.parameters():
-    p.requires_grad = False
+# TAR_FILE = "IN1K-vit.h.16-448px-300e.pth.tar"
+# print(f"Loading Vision Encoder {TAR_FILE}...")
+# checkpoint = torch.load(TAR_FILE, map_location=torch.device(DEVICE_0))
+# encoder_dict = checkpoint['target_encoder'] if 'target_encoder' in checkpoint else checkpoint['encoder']
+# encoder_dict = {k.replace('module.', ''): v for k, v in encoder_dict.items()}
+# msg = vision_encoder.load_state_dict(encoder_dict)
+# print(f'loaded pretrained encoder from with msg: {msg}')
+# for p in vision_encoder.parameters():
+#     p.requires_grad = False
 
-del checkpoint
-del encoder_dict
+# del checkpoint
+# del encoder_dict
 
 # Context T2I Module
 context_crosser = x_t2i_module(
@@ -103,7 +113,7 @@ context_crosser = x_t2i_module(
 ).to(DEVICE_0)
 context_crosser_total_params = sum(p.numel() for p in context_crosser.parameters())
 print(f"{context_crosser_total_params=}")
-
+assert False
 # Target T2I Module
 target_crosser = x_t2i_module(
     text_embed_dim=MODEL_CONFIG.T_EMBED_DIM,

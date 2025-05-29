@@ -256,7 +256,7 @@ class MVSA:
             yield (
                 torch.tensor(class_labels).to(self.device),  # Convert class labels to a tensor
                 images_paths,  # Image paths can be used for debugging
-            )
+            )        
 
 
 def simple_linear_sentiment_module(hidden_size, num_classes):
@@ -370,16 +370,21 @@ def train_simple_linear_module(
             "v-per_class_recall",
             "v-per_class_f1",
 
-            "t-accuracy",
-            "t-macro_precision",
-            "t-macro_recall",
-            "t-macro_f1",
-            "t-weighted_precision",
-            "t-weighted_recall",
-            "t-weighted_f1",
-            "t-per_class_precision",
-            "t-per_class_recall",
-            "t-per_class_f1",
+            't_accuracy_single',
+            't_weighted_precision_single',
+            't_weighted_recall_single',
+            't_weighted_f1_single',
+            "t_per_class_precision_single",
+            "t_per_class_recall_single",
+            "t_per_class_f1_single",
+
+            't_accuracy_multiple',
+            't_weighted_precision_multiple',
+            't_weighted_recall_multiple',
+            't_weighted_f1_multiple',
+            "t_per_class_precision_multiple",
+            "t_per_class_recall_multiple",
+            "t_per_class_f1_multiple",
         ],
         folder_name='MVSA',
         **{
@@ -464,14 +469,11 @@ def train_simple_linear_module(
                 ALL_PREDICTED_LOGITS = torch.cat((ALL_PREDICTED_LOGITS, predictions), dim=0)
                 ALL_GROUND_TRUTH = torch.cat((ALL_GROUND_TRUTH, class_labels), dim=0)
             
-                # Backpropagate
                 loss.backward()
                 optimizer.step()
     
-                # Optionally, print or log the learning rate
                 current_lr = scheduler.get_last_lr()[0]
 
-                # Calculate accuracy
                 total_loss += loss.item()
                 
                 metrics = calculate_metrics_from_logits(ALL_PREDICTED_LOGITS, ALL_GROUND_TRUTH)
@@ -542,7 +544,6 @@ def train_simple_linear_module(
                     ALL_PREDICTED_LOGITS = torch.cat((ALL_PREDICTED_LOGITS, predictions), dim=0)
                     ALL_GROUND_TRUTH = torch.cat((ALL_GROUND_TRUTH, class_labels), dim=0)
     
-                    # Calculate accuracy
                     total_loss += loss.item()
     
                     metrics = calculate_metrics_from_logits(ALL_PREDICTED_LOGITS, ALL_GROUND_TRUTH)
@@ -567,67 +568,96 @@ def train_simple_linear_module(
                         v_weighted_f1=metrics['weighted_f1'],
                     )
                     
-            # Test the model
+            # test phase
             linear_module.eval()
-        
+
             total_loss = 0
-            ALL_PREDICTED_LOGITS = torch.empty(0, 3).to(device)
-            ALL_GROUND_TRUTH = torch.empty(0, dtype=torch.long).to(device)
-        
+
+            ALL_PREDICTED_LOGITS_SINGLE = torch.empty(0, 3).to(device)
+            ALL_GROUND_TRUTH_SINGLE = torch.empty(0, dtype=torch.long).to(device)
+
+            ALL_PREDICTED_LOGITS_MULTIPLE = torch.empty(0, 3).to(device)
+            ALL_GROUND_TRUTH_MULTIPLE = torch.empty(0, dtype=torch.long).to(device)
+
             with tqdm(ds.iter_path('test'), desc=f"Testing") as pbar:
                 for class_labels, images_paths in pbar:
-                    # Check if the images are in the save_path
-                    for idx, image_path in enumerate(images_paths):
-                        if not os.path.exists(os.path.join(save_path, image_path.replace('jpg', 'pt'))):
-                            print(f"{image_path} not found")
-        
-                            images_paths.pop(idx)
-                            class_labels = torch.cat([
-                                class_labels[:idx],
-                                class_labels[idx+1:]
-                            ], dim=0)
-        
-                    # Embed
-                    embeddings = torch.stack([
-                        torch.load(os.path.join(save_path, image_path.split('/')[-1].replace('jpg', 'pt')))
-                        for image_path in images_paths
-                    ]).to(device)
-        
-                    # Predict
-                    predictions = linear_module(embeddings)
+
+                    single_indices = [idx for idx, path in enumerate(images_paths) if 'single' in path]
+                    multiple_indices = [idx for idx, path in enumerate(images_paths) if 'multiple' in path]
+
+                    # single
+                    if single_indices:
+                        single_paths = [images_paths[idx] for idx in single_indices]
+                        single_labels = class_labels[single_indices]
+                        
+                        single_embeddings = torch.stack([
+                            torch.load(os.path.join(save_path, path.split('/')[-1].replace('jpg', 'pt')))
+                            for path in single_paths if os.path.exists(os.path.join(save_path, path.replace('jpg', 'pt')))
+                        ]).to(device)
+
+                        single_predictions = linear_module(single_embeddings)
+                        single_labels = torch.tensor(single_labels, dtype=torch.long).to(device)
+                        
+                        loss_single = criterion(single_predictions, single_labels)
+                        total_loss += loss_single.item()
+
+                        ALL_PREDICTED_LOGITS_SINGLE = torch.cat((ALL_PREDICTED_LOGITS_SINGLE, single_predictions), dim=0)
+                        ALL_GROUND_TRUTH_SINGLE = torch.cat((ALL_GROUND_TRUTH_SINGLE, single_labels), dim=0)
                     
-                    class_labels = torch.tensor(class_labels, dtype=torch.long).to(device)
-        
-                    # Calculate loss
-                    loss = criterion(predictions, class_labels)
-    
-                    ALL_PREDICTED_LOGITS = torch.cat((ALL_PREDICTED_LOGITS, predictions), dim=0)
-                    ALL_GROUND_TRUTH = torch.cat((ALL_GROUND_TRUTH, class_labels), dim=0)
-        
-                    # Calculate accuracy
-                    total_loss += loss.item()
-        
-                    metrics = calculate_metrics_from_logits(ALL_PREDICTED_LOGITS, ALL_GROUND_TRUTH)
+                    # multiple
+                    if multiple_indices:
+                        multiple_paths = [images_paths[idx] for idx in multiple_indices]
+                        multiple_labels = class_labels[multiple_indices]
+                        
+                        multiple_embeddings = torch.stack([
+                            torch.load(os.path.join(save_path, path.split('/')[-1].replace('jpg', 'pt')))
+                            for path in multiple_paths if os.path.exists(os.path.join(save_path, path.replace('jpg', 'pt')))
+                        ]).to(device)
+
+                        multiple_predictions = linear_module(multiple_embeddings)
+                        multiple_labels = torch.tensor(multiple_labels, dtype=torch.long).to(device)
+
+                        loss_multiple = criterion(multiple_predictions, multiple_labels)
+                        total_loss += loss_multiple.item()
+
+                        ALL_PREDICTED_LOGITS_MULTIPLE = torch.cat((ALL_PREDICTED_LOGITS_MULTIPLE, multiple_predictions), dim=0)
+                        ALL_GROUND_TRUTH_MULTIPLE = torch.cat((ALL_GROUND_TRUTH_MULTIPLE, multiple_labels), dim=0)
                     
+                    # metrics 
+                    metrics_single = calculate_metrics_from_logits(ALL_PREDICTED_LOGITS_SINGLE, ALL_GROUND_TRUTH_SINGLE)
+                    metrics_multiple = calculate_metrics_from_logits(ALL_PREDICTED_LOGITS_MULTIPLE, ALL_GROUND_TRUTH_MULTIPLE)
+
                     saver.update_metric(
                         {
-                            't-accuracy': metrics['accuracy'],
-                            't-weighted_precision': metrics['weighted_precision'],
-                            't-weighted_recall': metrics['weighted_recall'],
-                            't-weighted_f1': metrics['weighted_f1'],
-                            "t-per_class_precision": metrics['per_class_precision'],
-                            "t-per_class_recall": metrics['per_class_recall'],
-                            "t-per_class_f1": metrics['per_class_f1'],
+                            't_accuracy_single': metrics_single['accuracy'],
+                            't_weighted_precision_single': metrics_single['weighted_precision'],
+                            't_weighted_recall_single': metrics_single['weighted_recall'],
+                            't_weighted_f1_single': metrics_single['weighted_f1'],
+                            "t_per_class_precision_single": metrics_single['per_class_precision'],
+                            "t_per_class_recall_single": metrics_single['per_class_recall'],
+                            "t_per_class_f1_single": metrics_single['per_class_f1'],
+
+                            't_accuracy_multiple': metrics_multiple['accuracy'],
+                            't_weighted_precision_multiple': metrics_multiple['weighted_precision'],
+                            't_weighted_recall_multiple': metrics_multiple['weighted_recall'],
+                            't_weighted_f1_multiple': metrics_multiple['weighted_f1'],
+                            "t_per_class_precision_multiple": metrics_multiple['per_class_precision'],
+                            "t_per_class_recall_multiple": metrics_multiple['per_class_recall'],
+                            "t_per_class_f1_multiple": metrics_multiple['per_class_f1'],
                         }
                     )
+
+                    # Save progress
                     saver.save_epoch(temp=True)
-    
+
+                    # Update progress bar
                     pbar.set_postfix(
-                        t_accuracy=metrics['accuracy'],
-                        t_weighted_precision=metrics['weighted_precision'],
-                        t_weighted_recall=metrics['weighted_recall'],
-                        t_weighted_f1=metrics['weighted_f1'],
+                        t_accuracy_single=metrics_single['accuracy'],
+                        t_weighted_f1_single=metrics_single['weighted_f1'],
+                        t_accuracy_multiple=metrics_multiple['accuracy'],
+                        t_weighted_f1_multiple=metrics_multiple['weighted_f1'],
                     )
+                    
 
         saver.save_epoch()
 

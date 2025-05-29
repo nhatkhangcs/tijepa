@@ -50,15 +50,20 @@ class VQADataset(Dataset):
         with open(os.path.join("vqa_dataset", "combined_data_val.json"), 'r') as f:
             self.val_dict = json.load(f)
             print(f"Loaded {len(self.val_dict)=}")
+            
+        with open(os.path.join("vqa_dataset", "data_test.json"), 'r') as f:
+            self.test_dict = json.load(f)
+            print(f"Loaded {len(self.test_dict)=}")
 
         with open(os.path.join("vqa_dataset", "answer_mapping.json"), 'r') as f:
             self.mapper = json.load(f)
             print(f"Loaded {len(self.mapper)=}")
             self.A3129 = list(self.mapper.keys())
             print(f"Loaded {len(self.A3129)=}")
-
+        
         with open(os.path.join("vqa_dataset", "answer_reverse_mapping.json"), 'r') as f:
             self.remapper = json.load(f)
+            self.remapper = [v for k, v in self.remapper.items()]
             print(f"Loaded {len(self.remapper)=}")
 
         self.train_dict = [
@@ -68,6 +73,7 @@ class VQADataset(Dataset):
         self.val_dict = [
             row for row in self.val_dict if row['multiple_choice_answer'] in self.A3129
         ]
+        
         print(f"Filtered {len(self.val_dict)=}")
 
         """
@@ -102,7 +108,7 @@ class VQADataset(Dataset):
 
     def get_V(self, idx, split="train"):
         """ Load tensorized image from disk. """
-        set = self.train_dict if split == "train" else self.val_dict
+        set = self.train_dict if split == "train" else self.val_dict if split == "val" else self.test_dict
         tensor_path = os.path.join(
             self.tensor_folder, 
             f"{set[idx]['image_id']:012d}.pt"  # Format as 12-digit number with leading zeros
@@ -111,12 +117,16 @@ class VQADataset(Dataset):
 
     def get_Q(self, idx, split="train"):
         """ Get a random caption for a given image. """
-        set = self.train_dict if split == "train" else self.val_dict
+        set = self.train_dict if split == "train" else self.val_dict if split == "val" else self.test_dict
         return set[idx]['questions']
 
     def get_A(self, idx, split="train"):
         set = self.train_dict if split == "train" else self.val_dict
         return set[idx]['multiple_choice_answer']
+    
+    def get_ID(self, idx):
+        # Just for test
+        return self.test_dict[idx]['question_id']
         
     def __len__(self):
         """ Number of batches in the dataset. """
@@ -151,6 +161,19 @@ class VQADataset(Dataset):
 
             yield torch.stack(images), questions, [self.mapper[ans] for ans in answers]
 
+    def iter_test(self):
+        """ Iterator to yield batches of images and captions. """
+            
+        self.current_idx = 0
+        while self.current_idx < len(self.test_dict):
+            batch_indices = range(self.current_idx, min(self.current_idx + self.val_batch_size, len(self.test_dict)))
+            images = [self.get_V(i, 'val') for i in batch_indices]
+            questions = [self.get_Q(i, 'val') for i in batch_indices]
+            ids = [self.get_ID(i) for i in batch_indices]
+            
+            self.current_idx += self.val_batch_size
+
+            yield torch.stack(images), questions, ids
 
             
 # collator = MaskCollator()
