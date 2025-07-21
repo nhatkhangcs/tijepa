@@ -271,6 +271,8 @@ def encode_dataset(
         crosser_type='target',
         tensor_folder=None,
     ):
+    if not os.path.exists(save_path):
+        os.mkdir(save_path)
     # Load the models
     text_encoder, vision_encoder, crosser = load_448(checkpoint_path, crosser_type)
 
@@ -294,7 +296,7 @@ def encode_dataset(
     # Create dataset
     ds = MVSA(
         batch_size = batch_size,
-        img_size = 224,
+        img_size = 448,
         device = device,
         transform = transform,
         tensor_folder=tensor_folder
@@ -395,7 +397,7 @@ def train_simple_linear_module(
         batch_size = batch_size,
         img_size = 224,
         device = device,
-        tensor_folder=f"src/datasets/mvsa-tensor"
+        tensor_folder=f"src/datasets/mvsa-tensor-448-new"
     )
 
     ds.shuffle(seed=seed)

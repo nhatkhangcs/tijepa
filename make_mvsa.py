@@ -2,7 +2,7 @@ from eval_on_mvsa import encode_dataset, train_simple_linear_module, MVSA
 import os
 import sys
 
-TRAIN = "SMALL-A100-448-10k-OBS-SCHEDULER"
+TRAIN = "SMALL-A100-448-600-10k-OBS-SCHEDULER-1744373585"
 EP = 300
 
 def to_tensor():
@@ -24,8 +24,8 @@ def to_tensor():
     
 def encode_all():
     
-    os.makedirs(f"trains/{TRAIN}/tensors")
-    os.makedirs(f"trains/{TRAIN}/tensors/{EP}-epoch-target")
+    # os.makedirs(f"trains/{TRAIN}/tensors")
+    # os.makedirs(f"trains/{TRAIN}/tensors/{EP}-epoch-target")
     # os.makedirs(f"trains/{TRAIN}/tensors/{EP}-epoch-context")
 
     encode_dataset(
@@ -34,7 +34,7 @@ def encode_all():
         device='cuda:0',
         save_path=f"trains/{TRAIN}/tensors/{EP}-epoch-target",
         crosser_type='target',
-        tensor_folder='src/datasets/mvsa-tensor-448',
+        tensor_folder='src/datasets/mvsa-tensor-448-new',
     )
     # encode_dataset(
     #     checkpoint_path=f"trains/{TRAIN}/epoch-{EP}.pt",
@@ -48,7 +48,7 @@ def encode_all():
 def train():
     train_simple_linear_module(
         save_path=f"trains/{TRAIN}/tensors/{EP}-epoch-target",
-        hidden_size=768,
+        hidden_size=1024,
         batch_size=128,
         epochs=50,
         device='cuda:0',
